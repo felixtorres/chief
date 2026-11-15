@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { chmodSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildClaudeArgs } from "../src/claude.js";
 import { parseConfig } from "../src/config.js";
@@ -100,6 +102,23 @@ describe("cook", () => {
     const out = await cook(cfg, input);
     expect(out.status).toBe("blocked");
     expect(fakeCalls()[1]!.prompt).toContain("No changes were committed");
+  });
+
+  it("hands a commit-hook rejection back to the worker instead of blocking", async () => {
+    process.env.FAKE_WORKER = "conventional";
+    const { cfg, input, repo } = setup();
+    // commitlint-style hook: only accept "type(scope): subject"
+    const hook = join(repo, ".git", "hooks", "commit-msg");
+    writeFileSync(hook, '#!/bin/sh\ngrep -qE "^[a-z]+\\([a-z-]+\\): " "$1" || { echo "type must be one of [feat, fix]" >&2; exit 1; }\n');
+    chmodSync(hook, 0o755);
+    const out = await cook(cfg, input);
+    expect(out.status).toBe("pass");
+    expect(out.rounds).toBe(2);
+    const worker2 = fakeCalls().filter((c) => !c.prompt.includes("REVIEWER"))[1]!;
+    expect(worker2.prompt).toContain("type must be one of [feat, fix]");
+    const log = execFileSync("git", ["log", "--format=%s", out.branch], { cwd: repo }).toString();
+    expect(log).toContain("feat(demo): add feature file");
+    expect(log).not.toContain("chief:");
   });
 
   it("reuses an existing worktree on a second run of the same card", async () => {

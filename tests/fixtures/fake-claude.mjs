@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Stand-in for `claude -p` in tests. Behaviour is driven by env vars:
 //   FAKE_STATE   dir for counters + a calls.jsonl log of argv/cwd/prompt
-//   FAKE_WORKER  "edit" (default) | "blocked" | "nochange" | "fail"
+//   FAKE_WORKER  "edit" (default) | "blocked" | "nochange" | "fail" | "conventional"
+//                ("conventional" commits as feat(demo): ... once told a hook rejected Chief's commit)
 //   FAKE_DENY    a shell command to report as permission-denied
 //   FAKE_REVIEW  comma list of verdicts per review call, e.g. "changes,approve"
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -41,5 +43,9 @@ if (mode === "blocked") out("BLOCKED: which environment should this target?\nmor
 if (mode !== "nochange") {
   const n = counter("edits");
   appendFileSync(join(process.cwd(), "feature.txt"), `edit ${n}\n`);
+}
+if (mode === "conventional" && prompt.includes("rejected by this repo's commit hooks")) {
+  execFileSync("git", ["add", "-A"], { cwd: process.cwd() });
+  execFileSync("git", ["commit", "-q", "-m", "feat(demo): add feature file"], { cwd: process.cwd() });
 }
 out("Changed feature.txt. Acceptance test: test -f feature.txt. Revert: git revert.");

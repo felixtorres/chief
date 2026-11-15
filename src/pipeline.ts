@@ -90,11 +90,17 @@ async function prepareWorktree(cfg: Config, input: CookInput): Promise<{ branch:
   return { branch, worktree, base };
 }
 
-async function commitLeftovers(worktree: string, title: string): Promise<void> {
+/**
+ * Safety net for work the worker left uncommitted. Returns the hook output if the
+ * repo's commit hooks (commitlint etc.) reject Chief's generic message, so the
+ * worker can commit with a message in the repo's own convention instead.
+ */
+async function commitLeftovers(worktree: string, title: string): Promise<string | undefined> {
   const status = await mustGit(["status", "--porcelain"], worktree);
-  if (!status) return;
+  if (!status) return undefined;
   await mustGit(["add", "-A"], worktree);
-  await mustGit(["commit", "-m", `chief: ${title}`], worktree);
+  const r = await git(["commit", "-m", `chief: ${title}`], worktree);
+  return r.code === 0 ? undefined : tail(`${r.stdout}\n${r.stderr}`.trim(), 1500);
 }
 
 async function commitCount(worktree: string, base: string): Promise<number> {
@@ -196,7 +202,11 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     summary = res.text;
     if (/^\s*BLOCKED:/i.test(res.text)) return blocked(res.text.trim().split("\n")[0]! + denied, rounds, summary);
 
-    await commitLeftovers(worktree, input.title);
+    const commitError = await commitLeftovers(worktree, input.title);
+    if (commitError) {
+      feedback = `Your changes are not committed: Chief's fallback commit was rejected by this repo's commit hooks:\n${commitError}\n\nCommit them yourself (git add, git commit) with a message in this repo's convention, then finish.`;
+      continue;
+    }
     if ((await commitCount(worktree, base)) === 0) {
       feedback = "No changes were committed. Implement the card, then git add and git commit.";
       continue;

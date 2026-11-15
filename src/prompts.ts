@@ -26,7 +26,7 @@ Rules:
 2. Write or identify an ACCEPTANCE TEST that fails before your change and passes after it.
 3. Make the smallest change that satisfies the card. No unrelated refactors, no new dependencies, no CI/deploy config changes.
 4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary.
-5. You do NOT need to commit. Chief commits your working tree. Never push, open PRs, or change remotes.
+5. Commit your work (git add, git commit) with a message in this repo's convention: match the style of \`git log\` and any commitlint or commit-msg hook, and if a hook rejects the message, fix it and commit again. Never push, open PRs, or change remotes.
 6. If the card is ambiguous, unsafe, or impossible, make no changes and reply with a first line of "BLOCKED: <your question>".
 
 Finish with a short summary: what changed, which acceptance test proves it, and how to revert.${
