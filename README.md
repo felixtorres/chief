@@ -84,7 +84,9 @@ tail -f ~/Library/Logs/chief/chief.log
 }
 ```
 
-Other keys, with defaults in `src/config.ts`: `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
+Each repo can also set `"ado": { "org", "project" }` when it lives in a different Azure DevOps org or project than the top-level `ado`.
+
+Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
 
 ## The board
 
@@ -107,9 +109,22 @@ The Kanban plugin stores the board as plain markdown, which is what Chief reads 
 
 In Teams: channel → **Workflows** → *Post to a channel when a webhook request is received*. Paste the URL into `teamsWebhook` and test with `chief doctor --notify`. If IT blocks Workflows, leave it empty and you'll get macOS notifications. The daily digest is always written either way.
 
+## Traceability
+
+Every card gets a run log, `runs/chief-<id>.md` next to the board, linked from the card as `run log`. It is rewritten after every step, so you can watch a card while it cooks. Per round it shows:
+
+- **Worker / Reviewer:** duration, turns, cost, model, session id, then every tool call in order: ✓/✗, the tool, the command or file, and the first line of the error when it failed. Allowlist denials are listed separately.
+- **Chief's checks:** each command, its exit code, and the end of the output when it failed.
+- **Review verdict:** approve / changes, blast radius and findings.
+- **Outcome:** the PR, or why the card was blocked.
+
+Cooking the same card again adds a new attempt at the top and keeps the earlier ones. The raw stream-json transcript of every call is kept in `tracesDir/<id>/`, and the PR description gets an **Agent activity** section (files edited, commands run, denials per round) for reviewers who can't see your vault.
+
 ## Security model
 
 - Workers run with `--permission-mode dontAsk` and an explicit allowlist. `git push`, `git remote`, `az`, `curl`, `wget`, WebFetch and WebSearch are always denied. Only Chief pushes.
+- Chief's allowlist is the only thing that grants permissions. Workers and the reviewer run with `--setting-sources ""` and `--strict-mcp-config`, so the allow rules you approved interactively (for example `Bash(pnpm *)` in a repo's `.claude/settings.local.json`), your hooks, plugins and MCP servers don't apply. Managed (org) settings still do. Put the extra commands a repo needs in its `allowedTools`; the worker's brief lists them.
+- The allowlist limits which commands run, not what they do: an allowed test command that installs dependencies (`uv run`, `npm test` with a pre-step) can still reach the network.
 - The reviewer gets read-only tools.
 - PRs are always drafts. There is no merge code path, so use ADO branch policies to require your approval.
 - Everything (board, state, worktrees, logs) stays on the work machine.

@@ -12,6 +12,8 @@ export interface RunOptions {
   input?: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Called with each stdout chunk as it arrives (e.g. to stream a trace to disk). */
+  onStdout?: (chunk: string) => void;
 }
 
 // Process-group ids of children still running, so a SIGTERM to Chief can take them down too.
@@ -62,7 +64,11 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       resolve({ code, stdout, stderr: stderr + extraErr, timedOut });
     };
 
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stdout.on("data", (d: Buffer) => {
+      const chunk = d.toString();
+      stdout += chunk;
+      opts.onStdout?.(chunk);
+    });
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", (err) => finish(127, String(err)));
     child.on("close", (code) => finish(code ?? (timedOut ? 124 : 1)));

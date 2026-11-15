@@ -6,6 +6,7 @@ import type { Config, RepoConfig } from "./config.js";
 import { fixPrompt, reviewPrompt, workerPrompt, type Brief } from "./prompts.js";
 import { git, sh, tail } from "./run.js";
 import type { Blast } from "./state.js";
+import { RunLog } from "./trace.js";
 
 export type Log = (msg: string) => void;
 
@@ -27,6 +28,8 @@ export interface Outcome {
   rounds: number;
   branch: string;
   worktree: string;
+  /** Path of the Markdown run log for this attempt. */
+  runLog?: string;
 }
 
 export interface Review {
@@ -121,7 +124,7 @@ async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promi
   return { ok, report: lines.join("\n") || "no checks configured" };
 }
 
-async function review(cfg: Config, input: CookInput, worktree: string, base: string): Promise<Review> {
+async function review(cfg: Config, input: CookInput, worktree: string, base: string, runLog: RunLog, round: number): Promise<Review> {
   let diff = await mustGit(["diff", base, "HEAD"], worktree);
   if (diff.length > MAX_DIFF_CHARS) diff = diff.slice(0, MAX_DIFF_CHARS) + "\n… (diff truncated; read the files directly)";
   const reviewPath = join(worktree, "REVIEW.md");
@@ -133,12 +136,17 @@ async function review(cfg: Config, input: CookInput, worktree: string, base: str
     disallowedTools: [...new Set([...cfg.disallowedTools, "Edit", "Write"])],
     permissionMode: cfg.reviewPermissionMode,
     timeoutMs: cfg.workerTimeoutMinutes * 60_000,
+    traceFile: runLog.traceFile(round, "reviewer"),
   });
-  if (!res.ok) return { verdict: "error", blast: "yellow", findings: [], error: `reviewer failed: ${res.error}` };
-  return parseReview(res.text);
+  runLog.addAgent("reviewer", round, runLog.traceFile(round, "reviewer"), res.denials, res.ok ? undefined : res.error);
+  const rev: Review = res.ok
+    ? parseReview(res.text)
+    : { verdict: "error", blast: "yellow", findings: [], error: `reviewer failed: ${res.error}` };
+  runLog.add({ kind: "review", round, verdict: rev.error ? `error: ${rev.error}` : rev.verdict, blast: rev.blast, findings: rev.findings });
+  return rev;
 }
 
-function prDescription(input: CookInput, summary: string, checks: string, rev: Review, rounds: number): string {
+function prDescription(input: CookInput, summary: string, checks: string, rev: Review, rounds: number, activity: string): string {
   return [
     `Automated by Chief (card \`#chief-${input.id}\`, ${rounds} round${rounds === 1 ? "" : "s"}).`,
     "",
@@ -152,6 +160,9 @@ function prDescription(input: CookInput, summary: string, checks: string, rev: R
     `Blast radius: **${rev.blast}**`,
     ...(rev.findings.length ? ["", "Reviewer notes:", ...rev.findings.map((f) => `- ${f}`)] : []),
     "",
+    "## Agent activity",
+    activity,
+    "",
     "## How to revert",
     "Revert the merge commit of this PR (or abandon the PR and delete the branch).",
   ].join("\n");
@@ -161,91 +172,115 @@ function prDescription(input: CookInput, summary: string, checks: string, rev: R
 export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): Promise<Outcome> {
   const { branch, worktree, base } = await prepareWorktree(cfg, input);
   const brief: Brief = { title: input.title, notes: input.notes, repo: input.repo };
-  const blocked = (reason: string, rounds: number, summary = ""): Outcome => ({
-    status: "blocked", reason, summary, rounds, branch, worktree,
-  });
+  const runLog = new RunLog(cfg, { id: input.id, title: input.title, repo: input.repo.name }, branch);
+  runLog.write();
+  const blocked = (reason: string, rounds: number, summary = ""): Outcome => {
+    runLog.add({ kind: "outcome", status: "blocked", text: `Blocked after round ${rounds}: ${reason}` });
+    return { status: "blocked", reason, summary, rounds, branch, worktree, runLog: runLog.path };
+  };
 
-  let sessionId: string | undefined;
-  let feedback: string | undefined;
-  let summary = "";
-  let checks = "";
-  let approved: Review | undefined;
-  let rounds = 0;
+  try {
+    return await runRounds();
+  } catch (err) {
+    runLog.add({ kind: "outcome", status: "blocked", text: `Chief error: ${(err as Error).message}` });
+    throw err;
+  }
 
-  for (rounds = 1; rounds <= cfg.maxRounds; rounds++) {
-    log(`[${input.id}] round ${rounds}: worker`);
-    const resume = rounds > 1 && sessionId !== undefined;
-    let res = await callClaude(cfg, {
-      cwd: worktree,
-      prompt: resume ? fixPrompt(feedback ?? "") : workerPrompt(brief, feedback),
-      allowedTools: workerTools(cfg, input.repo),
-      disallowedTools: cfg.disallowedTools,
-      permissionMode: cfg.workerPermissionMode,
-      resumeSessionId: resume ? sessionId : undefined,
-      timeoutMs: cfg.workerTimeoutMinutes * 60_000,
-    });
-    if (!res.ok && resume) {
-      log(`[${input.id}] resume failed (${res.error}); retrying with a fresh session`);
-      res = await callClaude(cfg, {
+  async function runRounds(): Promise<Outcome> {
+    let sessionId: string | undefined;
+    let feedback: string | undefined;
+    let summary = "";
+    let checks = "";
+    let approved: Review | undefined;
+    let rounds = 0;
+
+    for (rounds = 1; rounds <= cfg.maxRounds; rounds++) {
+      log(`[${input.id}] round ${rounds}: worker`);
+      const resume = rounds > 1 && sessionId !== undefined;
+      const trace = runLog.traceFile(rounds, "worker");
+      let res = await callClaude(cfg, {
         cwd: worktree,
-        prompt: workerPrompt(brief, feedback),
+        prompt: resume ? fixPrompt(feedback ?? "") : workerPrompt(brief, feedback),
         allowedTools: workerTools(cfg, input.repo),
         disallowedTools: cfg.disallowedTools,
         permissionMode: cfg.workerPermissionMode,
+        resumeSessionId: resume ? sessionId : undefined,
         timeoutMs: cfg.workerTimeoutMinutes * 60_000,
+        traceFile: trace,
       });
+      if (!res.ok && resume) {
+        log(`[${input.id}] resume failed (${res.error}); retrying with a fresh session`);
+        runLog.add({ kind: "note", round: rounds, text: `Resuming the worker session failed (${res.error}); retried with a fresh session.` });
+        res = await callClaude(cfg, {
+          cwd: worktree,
+          prompt: workerPrompt(brief, feedback),
+          allowedTools: workerTools(cfg, input.repo),
+          disallowedTools: cfg.disallowedTools,
+          permissionMode: cfg.workerPermissionMode,
+          timeoutMs: cfg.workerTimeoutMinutes * 60_000,
+          traceFile: trace,
+        });
+      }
+      runLog.addAgent("worker", rounds, trace, res.denials, res.ok ? undefined : res.error);
+      const denied = res.denials.length ? ` (denied: ${[...new Set(res.denials)].join("; ")})` : "";
+      if (res.denials.length) log(`[${input.id}] permission denials: ${res.denials.join("; ")}`);
+      if (!res.ok) return blocked(`worker failed: ${res.error}${denied}`, rounds, summary);
+      sessionId = res.sessionId ?? sessionId;
+      summary = res.text;
+      if (/^\s*BLOCKED:/i.test(res.text)) return blocked(res.text.trim().split("\n")[0]! + denied, rounds, summary);
+
+      const commitError = await commitLeftovers(worktree, input.title);
+      if (commitError) {
+        runLog.add({ kind: "note", round: rounds, text: `Chief's fallback commit was rejected by the repo's commit hooks; sent back to the worker. ${commitError}` });
+        feedback = `Your changes are not committed: Chief's fallback commit was rejected by this repo's commit hooks:\n${commitError}\n\nCommit them yourself (git add, git commit) with a message in this repo's convention, then finish.`;
+        continue;
+      }
+      if ((await commitCount(worktree, base)) === 0) {
+        feedback = "No changes were committed. Implement the card, then git add and git commit.";
+        runLog.add({ kind: "note", round: rounds, text: "The worker committed nothing; asked again." });
+        continue;
+      }
+
+      log(`[${input.id}] round ${rounds}: checks`);
+      const result = await runChecks(cfg, input.repo, worktree);
+      checks = result.report;
+      runLog.add({ kind: "checks", round: rounds, ok: result.ok, report: result.report });
+      if (!result.ok) {
+        feedback = `Checks failed:\n${result.report}`;
+        continue;
+      }
+
+      log(`[${input.id}] round ${rounds}: review`);
+      const rev = await review(cfg, input, worktree, base, runLog, rounds);
+      if (rev.verdict === "error") return blocked(rev.error ?? "review failed", rounds, summary);
+      if (rev.verdict === "approve") {
+        approved = rev;
+        break;
+      }
+      feedback = `Reviewer requested changes:\n${rev.findings.map((f) => `- ${f}`).join("\n") || "- (no specifics given)"}`;
     }
-    const denied = res.denials.length ? ` (denied: ${[...new Set(res.denials)].join("; ")})` : "";
-    if (res.denials.length) log(`[${input.id}] permission denials: ${res.denials.join("; ")}`);
-    if (!res.ok) return blocked(`worker failed: ${res.error}${denied}`, rounds, summary);
-    sessionId = res.sessionId ?? sessionId;
-    summary = res.text;
-    if (/^\s*BLOCKED:/i.test(res.text)) return blocked(res.text.trim().split("\n")[0]! + denied, rounds, summary);
 
-    const commitError = await commitLeftovers(worktree, input.title);
-    if (commitError) {
-      feedback = `Your changes are not committed: Chief's fallback commit was rejected by this repo's commit hooks:\n${commitError}\n\nCommit them yourself (git add, git commit) with a message in this repo's convention, then finish.`;
-      continue;
-    }
-    if ((await commitCount(worktree, base)) === 0) {
-      feedback = "No changes were committed. Implement the card, then git add and git commit.";
-      continue;
+    if (!approved) {
+      const last = Math.min(rounds, cfg.maxRounds);
+      return blocked(`did not converge after ${cfg.maxRounds} rounds; last feedback: ${tail(feedback ?? "", 400)}`, last, summary);
     }
 
-    log(`[${input.id}] round ${rounds}: checks`);
-    const result = await runChecks(cfg, input.repo, worktree);
-    checks = result.report;
-    if (!result.ok) {
-      feedback = `Checks failed:\n${result.report}`;
-      continue;
+    const outcome: Outcome = {
+      status: "pass", summary, blast: approved.blast, findings: approved.findings, rounds, branch, worktree, runLog: runLog.path,
+    };
+    if (!cfg.openPr) {
+      runLog.add({ kind: "outcome", status: "pass", text: `Approved in ${rounds} round(s); work is on branch \`${branch}\` (openPr is off).` });
+      return outcome;
     }
 
-    log(`[${input.id}] round ${rounds}: review`);
-    const rev = await review(cfg, input, worktree, base);
-    if (rev.verdict === "error") return blocked(rev.error ?? "review failed", rounds, summary);
-    if (rev.verdict === "approve") {
-      approved = rev;
-      break;
+    log(`[${input.id}] opening draft PR`);
+    try {
+      await pushBranch(worktree, branch);
+      const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
+      runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${rounds} round(s).` });
+      return { ...outcome, prId: pr.id, prUrl: pr.url };
+    } catch (err) {
+      return blocked(`work is ready on branch ${branch} but the PR step failed: ${(err as Error).message}`, rounds, summary);
     }
-    feedback = `Reviewer requested changes:\n${rev.findings.map((f) => `- ${f}`).join("\n") || "- (no specifics given)"}`;
-  }
-
-  if (!approved) {
-    const last = Math.min(rounds, cfg.maxRounds);
-    return blocked(`did not converge after ${cfg.maxRounds} rounds; last feedback: ${tail(feedback ?? "", 400)}`, last, summary);
-  }
-
-  const outcome: Outcome = {
-    status: "pass", summary, blast: approved.blast, findings: approved.findings, rounds, branch, worktree,
-  };
-  if (!cfg.openPr) return outcome;
-
-  log(`[${input.id}] opening draft PR`);
-  try {
-    await pushBranch(worktree, branch);
-    const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.title, prDescription(input, summary, checks, approved, rounds));
-    return { ...outcome, prId: pr.id, prUrl: pr.url };
-  } catch (err) {
-    return blocked(`work is ready on branch ${branch} but the PR step failed: ${(err as Error).message}`, rounds, summary);
   }
 }

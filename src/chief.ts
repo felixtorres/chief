@@ -27,10 +27,17 @@ function oneLine(text: string, max = 200): string {
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
-export function passStatus(o: Outcome): string {
+/** Obsidian link from a card to its run log (src/trace.ts writes runsDir/chief-<id>.md). */
+export function logLink(id: string): string {
+  return `[[chief-${id}|run log]]`;
+}
+
+export function passStatus(o: Outcome, id: string): string {
   const blast = o.blast ? `${BLAST_ICON[o.blast]} ${o.blast}` : "";
   const where = o.prUrl ? `[PR !${o.prId}](${o.prUrl})` : `branch \`${o.branch}\``;
-  return [`🔍 ${blast}`.trim(), where, `${o.rounds} round${o.rounds === 1 ? "" : "s"}`].join(" · ");
+  const parts = [`🔍 ${blast}`.trim(), where, `${o.rounds} round${o.rounds === 1 ? "" : "s"}`];
+  if (o.runLog) parts.push(logLink(id));
+  return parts.join(" · ");
 }
 
 export class Chief {
@@ -101,7 +108,7 @@ export class Chief {
         card.setStatus(`🚧 ${claimed.problem}`);
         board.move(card, lanes.blocked);
       } else {
-        card.setStatus(`🍳 cooking since ${hhmm()}`);
+        card.setStatus(`🍳 cooking since ${hhmm()} · ${logLink(id)}`);
         board.move(card, lanes.cooking);
       }
       return claimed;
@@ -138,14 +145,14 @@ export class Chief {
     });
 
     if (outcome.status === "pass") {
-      this.moveCard(c.id, this.cfg.lanes.pass, passStatus(outcome));
+      this.moveCard(c.id, this.cfg.lanes.pass, passStatus(outcome, c.id));
       await this.send(this.cfg, {
         title: `Ready at the pass: ${c.title}`,
         body: `${outcome.blast ?? "?"} blast radius, ${outcome.rounds} round(s). ${outcome.prUrl ? "Draft PR opened." : `Branch ${outcome.branch}.`}`,
         url: outcome.prUrl,
       });
     } else {
-      this.moveCard(c.id, this.cfg.lanes.blocked, `🚧 ${oneLine(outcome.reason ?? "blocked")}`);
+      this.moveCard(c.id, this.cfg.lanes.blocked, `🚧 ${oneLine(outcome.reason ?? "blocked")}${outcome.runLog ? ` · ${logLink(c.id)}` : ""}`);
       await this.send(this.cfg, { title: `Blocked: ${c.title}`, body: oneLine(outcome.reason ?? "blocked", 400) });
     }
     this.log(`[${c.id}] → ${outcome.status}${outcome.reason ? `: ${oneLine(outcome.reason)}` : ""}`);

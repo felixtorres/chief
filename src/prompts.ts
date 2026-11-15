@@ -13,6 +13,15 @@ function checksLine(repo: RepoConfig): string {
   return cmds.length ? cmds.map((c) => `\`${c}\``).join(" and ") : "the project's own test/lint commands";
 }
 
+/** "Bash(pnpm turbo run test:*)" → "pnpm turbo run test …", so the worker knows what it may run. */
+function extraCommands(repo: RepoConfig): string {
+  const cmds = repo.allowedTools
+    .map((t) => /^Bash\((.+?)(:\*)?\)$/.exec(t))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => `\`${m[1]}${m[2] ? " …" : ""}\``);
+  return cmds.length ? ` Other commands you may run here: ${cmds.join(", ")}.` : "";
+}
+
 export function workerPrompt(brief: Brief, feedback?: string): string {
   const notes = brief.notes.length ? brief.notes.map((n) => `- ${n}`).join("\n") : "(none)";
   return `You are a line cook in an automated software kitchen. Complete exactly one card in the current git worktree (repo: ${brief.repo.name}). Nobody is watching live; Chief will check your proof.
@@ -25,7 +34,7 @@ Rules:
 1. Read the surrounding code first and follow the existing style and conventions (see CLAUDE.md if present).
 2. Write or identify an ACCEPTANCE TEST that fails before your change and passes after it.
 3. Make the smallest change that satisfies the card. No unrelated refactors, no new dependencies, no CI/deploy config changes.
-4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary.
+4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary.${extraCommands(brief.repo)}
 5. Commit your work (git add, git commit) with a message in this repo's convention: match the style of \`git log\` and any commitlint or commit-msg hook, and if a hook rejects the message, fix it and commit again. Never push, open PRs, or change remotes.
 6. If the card is ambiguous, unsafe, or impossible, make no changes and reply with a first line of "BLOCKED: <your question>".
 

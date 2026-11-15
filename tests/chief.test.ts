@@ -43,7 +43,7 @@ describe("Chief.tick", () => {
     const board = readBoard(cfg.boardPath);
     const card = board.lane("Pass")!.cards[0]!;
     expect(card.cleanTitle).toBe("Add feature file");
-    expect(card.status).toMatch(/^🔍 🟢 green · branch `chief\/[0-9a-f]{6}-add-feature-file` · 1 round$/);
+    expect(card.status).toMatch(/^🔍 🟢 green · branch `chief\/([0-9a-f]{6})-add-feature-file` · 1 round · \[\[chief-\1\|run log\]\]$/);
     expect(board.lane("Ready")!.cards.map((c) => c.cleanTitle)).toEqual(["Second card"]);
 
     const run = state.get(card.id!)!;
@@ -88,7 +88,7 @@ describe("Chief.tick", () => {
     const { cfg, chief } = setup({ Ready: ["Ambiguous thing"] });
     await chief.tick();
     const card = readBoard(cfg.boardPath).lane("Blocked")!.cards[0]!;
-    expect(card.status).toBe("🚧 BLOCKED: which environment should this target?");
+    expect(card.status).toBe(`🚧 BLOCKED: which environment should this target? · [[chief-${card.id}|run log]]`);
   });
 
   it("errors clearly if the board lacks a required lane", async () => {

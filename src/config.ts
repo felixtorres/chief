@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface RepoConfig {
   name: string;
@@ -33,6 +33,17 @@ export interface Config {
   stateFile: string;
   worktreesDir: string;
   digestDir: string;
+  /** Human-readable run log per card (Markdown, meant to live in the vault next to the board). */
+  runsDir: string;
+  /** Raw stream-json transcripts of every worker/reviewer call. */
+  tracesDir: string;
+  /**
+   * Which of your own Claude Code settings files workers load ("user,project,local" are the
+   * options). Default "" loads none, so allow rules you approved interactively never leak in.
+   */
+  settingSources: string;
+  /** Ignore your MCP servers in worker/reviewer sessions (default true). */
+  strictMcpConfig: boolean;
   pollSeconds: number;
   claudeCmd: string[];
   model?: string;
@@ -104,6 +115,11 @@ function str(v: unknown, key: string, fallback?: string): string {
     if (fallback !== undefined) return fallback;
     throw new ConfigError(`config: "${key}" is required`);
   }
+  if (typeof v !== "string") throw new ConfigError(`config: "${key}" must be a string`);
+  return v;
+}
+
+function strAllowEmpty(v: unknown, key: string): string {
   if (typeof v !== "string") throw new ConfigError(`config: "${key}" must be a string`);
   return v;
 }
@@ -184,6 +200,13 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     stateFile: expandHome(str(r.stateFile, "stateFile", join(stateDir, "state.json")), baseDir),
     worktreesDir: expandHome(str(r.worktreesDir, "worktreesDir", join(stateDir, "worktrees")), baseDir),
     digestDir: expandHome(str(r.digestDir, "digestDir", join(stateDir, "digests")), baseDir),
+    runsDir: expandHome(
+      str(r.runsDir, "runsDir", join(dirname(expandHome(str(r.boardPath, "boardPath"), baseDir)), "runs")),
+      baseDir,
+    ),
+    tracesDir: expandHome(str(r.tracesDir, "tracesDir", join(stateDir, "traces")), baseDir),
+    settingSources: r.settingSources === undefined ? "" : strAllowEmpty(r.settingSources, "settingSources"),
+    strictMcpConfig: bool(r.strictMcpConfig, "strictMcpConfig", true),
     pollSeconds: num(r.pollSeconds, "pollSeconds", 300),
     claudeCmd,
     model: r.model === undefined ? undefined : str(r.model, "model"),
