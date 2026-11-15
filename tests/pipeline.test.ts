@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { buildClaudeArgs } from "../src/claude.js";
 import { parseConfig } from "../src/config.js";
 import { cook, parseReview, slugify, workerTools } from "../src/pipeline.js";
-import { RunLog } from "../src/trace.js";
+import { RunLog, tildify } from "../src/trace.js";
 import { fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
 function setup(overrides: Record<string, unknown> = {}) {
@@ -178,6 +178,12 @@ describe("cook", () => {
     expect(activity).toContain("Commands: ✗ `npm test`");
     expect(activity).toContain("Denied: `Bash: curl x`");
     expect(activity).toContain(join(cfg.runsDir, "chief-x1.md"));
+  });
+
+  it("shortens home paths in the PR activity so it doesn't carry your username", () => {
+    expect(tildify("/Users/me/Work Notes/runs/chief-x.md", "/Users/me")).toBe("~/Work Notes/runs/chief-x.md");
+    expect(tildify("/Users/meme/x", "/Users/me")).toBe("/Users/meme/x");
+    expect(tildify("/tmp/x", "/Users/me")).toBe("/tmp/x");
   });
 
   it("reuses an existing worktree on a second run of the same card", async () => {

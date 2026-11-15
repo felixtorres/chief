@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { Config } from "./config.js";
 import type { Blast } from "./state.js";
@@ -132,6 +133,11 @@ function time(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toTimeString().slice(0, 8);
+}
+
+/** Show a path under the home directory as ~/…, so PRs don't carry your username. */
+export function tildify(path: string, home = homedir()): string {
+  return path === home ? "~" : path.startsWith(home + "/") ? "~" + path.slice(home.length) : path;
 }
 
 /** Inline code that survives being inside a Markdown table cell. */
@@ -281,7 +287,7 @@ export class RunLog {
       if (cmds.length) lines.push(`  - Commands: ${cmds.slice(0, 15).join(", ")}${cmds.length > 15 ? ", …" : ""}`);
       if (e.denials.length) lines.push(`  - Denied: ${[...new Set(e.denials)].map((d) => `\`${d}\``).join(", ")}`);
     }
-    lines.push("", `Full run log on the Chief host: \`${this.path}\` (raw transcripts in \`${join(this.cfg.tracesDir, this.card.id)}\`).`);
+    lines.push("", `Full run log on the Chief host: \`${tildify(this.path)}\` (raw transcripts in \`${tildify(join(this.cfg.tracesDir, this.card.id))}\`).`);
     return lines.join("\n");
   }
 }
