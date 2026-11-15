@@ -1,0 +1,27 @@
+{
+  "boardPath": "~/Documents/WorkVault/Chief/board.md",
+  "digestDir": "~/Documents/WorkVault/Chief/digests",
+  "defaultRepo": "my-service",
+  "repos": {
+    "my-service": {
+      "path": "~/code/my-service",
+      "defaultBranch": "main",
+      "testCmd": "npm test",
+      "lintCmd": "npm run lint",
+      "adoRepository": "my-service",
+      "allowedTools": ["Bash(npm run build:*)"]
+    }
+  },
+  "ado": {
+    "org": "https://dev.azure.com/your-org",
+    "project": "YourProject"
+  },
+  "teamsWebhook": "",
+  "openPr": true,
+  "pollSeconds": 300,
+  "maxRounds": 3,
+  "workerTimeoutMinutes": 45,
+  "checkTimeoutMinutes": 15,
+  "workerPermissionMode": "dontAsk",
+  "reviewPermissionMode": "dontAsk"
+}

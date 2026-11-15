@@ -1,0 +1,24 @@
+{
+  "name": "chief",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Always-on local software kitchen: Obsidian Kanban board -> headless Claude Code workers -> draft Azure DevOps PRs",
+  "type": "module",
+  "bin": {
+    "chief": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "chief": "node dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

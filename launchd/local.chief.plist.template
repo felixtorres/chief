@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.chief</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- caffeinate -i keeps the Mac from idle-sleeping while Chief runs -->
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>__NODE__</string>
+    <string>__CHIEF_DIR__/dist/cli.js</string>
+    <string>daemon</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__CHIEF_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/chief/chief.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/chief/chief.log</string>
+</dict>
+</plist>
