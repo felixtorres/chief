@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { adoFor } from "./ado.js";
 import { readBoard } from "./board.js";
 import { Chief } from "./chief.js";
 import { callClaude } from "./claude.js";
@@ -122,8 +123,10 @@ async function doctor(configPath: string, smoke: boolean, testNotify: boolean): 
     if (az.code === 0) {
       const ext = await run("az", ["extension", "show", "--name", "azure-devops", "--output", "none"]);
       check(ext.code === 0, "az azure-devops extension", "az extension add --name azure-devops");
-      check(Boolean(cfg.ado.org) || /organization/.test((await run("az", ["devops", "configure", "--list"])).stdout),
-        "Azure DevOps org configured", 'set "ado.org" in config or: az devops configure --defaults organization=https://dev.azure.com/<org>');
+      const azDefaultOrg = /organization/.test((await run("az", ["devops", "configure", "--list"])).stdout);
+      const noOrg = Object.values(cfg.repos).filter((r) => !adoFor(cfg, r).org).map((r) => r.name);
+      check(azDefaultOrg || noOrg.length === 0,
+        `Azure DevOps org configured${noOrg.length ? ` (no org for: ${noOrg.join(", ")})` : ""}`, 'set "ado.org" in config or: az devops configure --defaults organization=https://dev.azure.com/<org>');
     }
   } else {
     console.log("· openPr is false: Chief stops at a local branch (no az needed)");

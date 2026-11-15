@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
+import { adoFor } from "../src/ado.js";
 import { Board, readBoard } from "../src/board.js";
 import { Chief } from "../src/chief.js";
 import { parseConfig } from "../src/config.js";
@@ -113,6 +114,16 @@ describe("config + digest", () => {
     expect(() => parseConfig({ boardPath: "/b", repos: {} })).toThrow(/at least one repo/);
     expect(() => parseConfig({ boardPath: "/b", repos: { a: { path: "/a" } }, defaultRepo: "b" })).toThrow(/not in repos/);
     expect(() => parseConfig({ repos: { a: { path: "/a" } } })).toThrow(/boardPath/);
+  });
+
+  it("lets a repo override the top-level ado org/project", () => {
+    const cfg = parseConfig({
+      boardPath: "/b",
+      ado: { org: "https://dev.azure.com/top", project: "Top" },
+      repos: { a: { path: "/a", ado: { org: "https://dev.azure.com/other" } }, b: { path: "/b" } },
+    });
+    expect(adoFor(cfg, cfg.repos.a!)).toEqual({ org: "https://dev.azure.com/other", project: "Top" });
+    expect(adoFor(cfg, cfg.repos.b!)).toEqual({ org: "https://dev.azure.com/top", project: "Top" });
   });
 
   it("appends one line per event to the daily digest", () => {

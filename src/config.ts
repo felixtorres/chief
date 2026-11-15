@@ -12,6 +12,8 @@ export interface RepoConfig {
   adoRepository: string;
   /** Extra tools the worker may use in this repo, e.g. "Bash(npm run build:*)". */
   allowedTools: string[];
+  /** Per-repo Azure DevOps org/project; falls back to the top-level "ado". */
+  ado: { org?: string; project?: string };
 }
 
 export interface Lanes {
@@ -128,6 +130,14 @@ function bool(v: unknown, key: string, fallback: boolean): boolean {
   return v;
 }
 
+function adoSettings(v: unknown, key: string): { org?: string; project?: string } {
+  const a = (v ?? {}) as Raw;
+  return {
+    org: a.org === undefined ? undefined : str(a.org, `${key}.org`),
+    project: a.project === undefined ? undefined : str(a.project, `${key}.project`),
+  };
+}
+
 export function parseConfig(raw: unknown, baseDir?: string): Config {
   if (!raw || typeof raw !== "object") throw new ConfigError("config: expected a JSON object");
   const r = raw as Raw;
@@ -148,6 +158,7 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
       lintCmd: str(rr.lintCmd, `repos.${name}.lintCmd`, ""),
       adoRepository: str(rr.adoRepository, `repos.${name}.adoRepository`, name),
       allowedTools: strList(rr.allowedTools, `repos.${name}.allowedTools`, []),
+      ado: adoSettings(rr.ado, `repos.${name}.ado`),
     };
   }
 
@@ -162,7 +173,6 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     lanes[key] = str(lanesRaw[key], `lanes.${key}`, DEFAULT_LANES[key]);
   }
 
-  const adoRaw = (r.ado ?? {}) as Raw;
   const claudeCmd = strList(r.claudeCmd, "claudeCmd", ["claude"]);
   if (claudeCmd.length === 0) throw new ConfigError('config: "claudeCmd" must not be empty');
 
@@ -188,10 +198,7 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     reviewAllowedTools: strList(r.reviewAllowedTools, "reviewAllowedTools", DEFAULT_REVIEW_TOOLS),
     openPr: bool(r.openPr, "openPr", true),
     fetchBeforeBranch: bool(r.fetchBeforeBranch, "fetchBeforeBranch", true),
-    ado: {
-      org: adoRaw.org === undefined ? undefined : str(adoRaw.org, "ado.org"),
-      project: adoRaw.project === undefined ? undefined : str(adoRaw.project, "ado.project"),
-    },
+    ado: adoSettings(r.ado, "ado"),
     teamsWebhook: r.teamsWebhook ? str(r.teamsWebhook, "teamsWebhook") : undefined,
   };
 }
