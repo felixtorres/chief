@@ -136,3 +136,15 @@ describe("config + digest", () => {
     expect(readFileSync(file, "utf8")).toBe("- 09:05 **Ready**: line one line two [PR](https://x/pr/1)\n- 09:05 **Blocked**: why\n");
   });
 });
+
+describe("fitDescription", () => {
+  it("leaves short descriptions alone and cuts long ones at a line under the limit", async () => {
+    const { fitDescription } = await import("../src/ado.js");
+    expect(fitDescription("short\n\ntext")).toBe("short\n\ntext");
+    const long = ["## Summary", "kept", "", ...Array.from({ length: 200 }, (_, i) => `- step ${i} ${"x".repeat(30)}`)].join("\n");
+    const fitted = fitDescription(long);
+    expect(fitted.split("\n").map((l) => (l === "" ? " " : l)).join("\n").length).toBeLessThanOrEqual(4000);
+    expect(fitted.startsWith("## Summary\nkept\n")).toBe(true);
+    expect(fitted).toMatch(/Description shortened/);
+  });
+});

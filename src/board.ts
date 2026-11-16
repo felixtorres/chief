@@ -10,6 +10,8 @@ const ID_RE = /#chief-([0-9a-f]{6})\b/;
 const REPO_RE = /#repo\/([\w.-]+)/;
 const TRAILER_RE = /^%% kanban:settings/;
 export const STATUS_SEP = "<br>🤖 ";
+/** A card body line holding an old Chief status (Obsidian moved it off the first line). */
+const OLD_STATUS_RE = /^\s*(<br>)?🤖 /;
 
 export class Card {
   constructor(
@@ -45,9 +47,12 @@ export class Card {
       .trim();
   }
 
-  /** Extra lines of the card, without list/indent markers. */
+  /** Extra lines of the card, without list/indent markers and without old Chief statuses. */
   get notes(): string[] {
-    return this.extra.map((l) => l.trim().replace(/^[-*]\s+/, "")).filter(Boolean);
+    return this.extra
+      .filter((l) => !OLD_STATUS_RE.test(l))
+      .map((l) => l.trim().replace(/^[-*]\s+/, ""))
+      .filter(Boolean);
   }
 
   ensureId(gen: () => string = newId): string {
@@ -62,6 +67,9 @@ export class Card {
   setStatus(status: string): void {
     const clean = status.replace(/\s*\n\s*/g, " ").replaceAll("<br>", " ").trim();
     this.text = this.title.trimEnd() + (clean ? STATUS_SEP + clean : "");
+    // Obsidian Kanban turns "<br>" into a new line when you edit or drag a card, so an old
+    // status can end up as its own line. It is Chief's text, so drop it.
+    this.extra = this.extra.filter((l) => !OLD_STATUS_RE.test(l));
   }
 
   render(): string[] {

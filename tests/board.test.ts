@@ -100,6 +100,13 @@ describe("Card", () => {
     c.setStatus("");
     expect(c.text).toBe("Task #chief-abc123");
   });
+
+  it("drops old statuses that Obsidian moved onto their own lines", () => {
+    const c = new Card(false, "Task #chief-abc123", ["\t🤖 🚧 PR step failed", "\tKeep this note", "\t<br>🤖 🍳 cooking"]);
+    expect(c.notes).toEqual(["Keep this note"]);
+    c.setStatus("🍳 cooking again");
+    expect(c.render()).toEqual([`- [ ] Task #chief-abc123${STATUS_SEP}🍳 cooking again`, "\tKeep this note"]);
+  });
 });
 
 describe("updateBoard", () => {

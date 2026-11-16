@@ -21,6 +21,23 @@ export async function pushBranch(worktree: string, branch: string): Promise<void
   if (r.code !== 0) throw new AdoError(`git push failed: ${tail(r.stderr, 500)}`);
 }
 
+/** Azure DevOps rejects PR descriptions longer than this. */
+export const PR_DESCRIPTION_MAX = 4000;
+
+/**
+ * Fit a PR description under Azure DevOps' limit. az sends blank lines as " ", so count
+ * them that way. Cuts at a line boundary and says so; the run log keeps the full story.
+ */
+export function fitDescription(description: string, max = PR_DESCRIPTION_MAX): string {
+  const size = (s: string) => s.split("\n").map((l) => (l === "" ? " " : l)).join("\n").length;
+  if (size(description) <= max) return description;
+  const note = "\n\n_(Description shortened to fit Azure DevOps' 4000-character limit. The full run log is on the Chief host.)_";
+  const lines = description.split("\n");
+  while (lines.length && size(lines.join("\n") + note) > max) lines.pop();
+  const kept = lines.join("\n");
+  return size(kept + note) <= max ? kept + note : description.slice(0, max - 1) + "…";
+}
+
 export async function createDraftPr(
   cfg: Config,
   repo: RepoConfig,
@@ -36,7 +53,7 @@ export async function createDraftPr(
     "--target-branch", repo.defaultBranch,
     "--repository", repo.adoRepository,
     "--title", title.slice(0, 400),
-    "--description", ...description.split("\n").map((l) => (l === "" ? " " : l)),
+    "--description", ...fitDescription(description).split("\n").map((l) => (l === "" ? " " : l)),
     "--output", "json",
     ...orgArgs(cfg, repo),
   ];
