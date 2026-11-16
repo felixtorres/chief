@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { createDraftPr, pushBranch } from "./ado.js";
 import { callClaude } from "./claude.js";
 import type { Config, RepoConfig } from "./config.js";
@@ -91,6 +91,33 @@ async function prepareWorktree(cfg: Config, input: CookInput): Promise<{ branch:
   }
   const base = await mustGit(["merge-base", "HEAD", baseRef], worktree);
   return { branch, worktree, base };
+}
+
+/**
+ * Remove a finished card's worktree and its local chief/ branch. Only touches paths under
+ * worktreesDir and branches named chief/..., so your own checkouts are never affected.
+ * The merged work lives on in the target branch; the remote branch is ADO's to delete.
+ */
+export async function removeWorktree(cfg: Config, repo: RepoConfig, worktree?: string, branch?: string): Promise<string[]> {
+  const removed: string[] = [];
+  const root = resolve(cfg.worktreesDir) + sep;
+  if (worktree && resolve(worktree).startsWith(root)) {
+    if (existsSync(worktree)) {
+      const r = await git(["worktree", "remove", "--force", worktree], repo.path);
+      if (r.code !== 0) throw new Error(`git worktree remove failed: ${tail(r.stderr || r.stdout, 300)}`);
+      removed.push(worktree);
+    }
+    await git(["worktree", "prune"], repo.path);
+  }
+  if (branch?.startsWith("chief/")) {
+    const exists = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo.path)).code === 0;
+    if (exists) {
+      const r = await git(["branch", "-D", branch], repo.path);
+      if (r.code !== 0) throw new Error(`git branch -D failed: ${tail(r.stderr || r.stdout, 300)}`);
+      removed.push(branch);
+    }
+  }
+  return removed;
 }
 
 /**

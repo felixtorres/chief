@@ -2,7 +2,7 @@ import { prStatus } from "./ado.js";
 import { type Card, updateBoard } from "./board.js";
 import type { Config, RepoConfig } from "./config.js";
 import { notify, type Note } from "./notify.js";
-import { cook, type Log, type Outcome } from "./pipeline.js";
+import { cook, removeWorktree, type Log, type Outcome } from "./pipeline.js";
 import type { Blast, StateStore } from "./state.js";
 
 export interface Claimed {
@@ -164,6 +164,7 @@ export class Chief {
     if (!this.cfg.openPr) return;
     if (!force && Date.now() - this.lastServedCheck < SERVED_CHECK_MS) return;
     this.lastServedCheck = Date.now();
+    for (const run of this.state.byStatus("served")) if (run.worktree) await this.cleanUp(run.id);
     for (const run of this.state.byStatus("pass")) {
       const repo = this.cfg.repos[run.repo];
       if (!run.prId || !repo) continue;
@@ -172,10 +173,25 @@ export class Chief {
         this.state.upsert({ id: run.id, status: "served" });
         this.moveCard(run.id, this.cfg.lanes.served, `✅ merged · [PR !${run.prId}](${run.prUrl})`);
         this.log(`[${run.id}] served (PR !${run.prId} completed)`);
+        await this.cleanUp(run.id);
       } else if (status === "abandoned") {
         this.state.upsert({ id: run.id, status: "blocked", reason: "PR abandoned" });
         this.moveCard(run.id, this.cfg.lanes.blocked, `🚧 PR !${run.prId} was abandoned`);
       }
+    }
+  }
+
+  /** Remove the worktree and local branch of a Served card. Never fails the loop. */
+  async cleanUp(id: string): Promise<void> {
+    const run = this.state.get(id);
+    const repo = run && this.cfg.repos[run.repo];
+    if (!run || !repo || run.status !== "served" || (!run.worktree && !run.branch)) return;
+    try {
+      const removed = await removeWorktree(this.cfg, repo, run.worktree, run.branch);
+      this.state.upsert({ id, worktree: undefined });
+      if (removed.length) this.log(`[${id}] cleaned up ${removed.join(" and ")}`);
+    } catch (err) {
+      this.log(`[${id}] cleanup failed, will retry: ${(err as Error).message}`);
     }
   }
 

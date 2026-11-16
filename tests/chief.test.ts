@@ -148,3 +148,27 @@ describe("fitDescription", () => {
     expect(fitted).toMatch(/Description shortened/);
   });
 });
+
+describe("Chief.cleanUp", () => {
+  it("removes a Served card's worktree and chief/ branch, and leaves other paths alone", async () => {
+    const { existsSync, mkdirSync } = await import("node:fs");
+    const { git } = await import("../src/run.js");
+    const { cfg, chief, state } = setup({ Ready: ["Add feature file"] });
+    await chief.tick();
+    const run = state.byStatus("pass")[0]!;
+    expect(existsSync(run.worktree!)).toBe(true);
+    const repoPath = cfg.repos.demo!.path;
+
+    state.upsert({ id: run.id, status: "served" });
+    await chief.cleanUp(run.id);
+    expect(existsSync(run.worktree!)).toBe(false);
+    expect((await git(["rev-parse", "--verify", "--quiet", `refs/heads/${run.branch}`], repoPath)).code).not.toBe(0);
+    expect(state.get(run.id)!.worktree).toBeUndefined();
+
+    const outside = join(tmp(), "mine");
+    mkdirSync(outside);
+    state.upsert({ id: run.id, worktree: outside, branch: "feature/mine" });
+    await chief.cleanUp(run.id);
+    expect(existsSync(outside)).toBe(true);
+  });
+});
