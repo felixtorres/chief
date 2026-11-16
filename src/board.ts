@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 const CARD_RE = /^- \[([ xX])\] (.*)$/;
 const ID_RE = /#chief-([0-9a-f]{6})\b/;
 const REPO_RE = /#repo\/([\w.-]+)/;
+const BASE_RE = /#base\/([\w./-]*[\w-])/;
 const TRAILER_RE = /^%% kanban:settings/;
 export const STATUS_SEP = "<br>🤖 ";
 /** A card body line holding an old Chief status (Obsidian moved it off the first line). */
@@ -38,11 +39,17 @@ export class Card {
     return REPO_RE.exec(this.title)?.[1];
   }
 
-  /** Title without Chief/repo tags. */
+  /** Branch to start from instead of the repo's default: #base/<branch> or #base/chief-<id>. */
+  get base(): string | undefined {
+    return BASE_RE.exec(this.title)?.[1];
+  }
+
+  /** Title without Chief/repo/base tags. */
   get cleanTitle(): string {
     return this.title
       .replace(new RegExp(ID_RE.source, "g"), "")
       .replace(new RegExp(REPO_RE.source, "g"), "")
+      .replace(new RegExp(BASE_RE.source, "g"), "")
       .replace(/\s+/g, " ")
       .trim();
   }

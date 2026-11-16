@@ -10,6 +10,8 @@ export interface Claimed {
   title: string;
   notes: string[];
   repo?: RepoConfig;
+  /** Branch to start from and target; undefined means the repo's default branch. */
+  base?: string;
   problem?: string;
 }
 
@@ -101,10 +103,11 @@ export class Chief {
       const repoName = card.repo ?? this.cfg.defaultRepo;
       const repo = repoName ? this.cfg.repos[repoName] : undefined;
       const claimed: Claimed = { id, title: card.cleanTitle, notes: card.notes, repo };
-      if (!repo) {
-        claimed.problem = repoName
-          ? `unknown repo "${repoName}"; add it to the Chief config`
-          : "no repo: tag the card with #repo/<name>";
+      const base = this.resolveBase(card.base, id);
+      claimed.base = base.branch;
+      if (!repo || base.problem) {
+        claimed.problem = base.problem
+          ?? (repoName ? `unknown repo "${repoName}"; add it to the Chief config` : "no repo: tag the card with #repo/<name>");
         card.setStatus(`🚧 ${claimed.problem}`);
         board.move(card, lanes.blocked);
       } else {
@@ -115,9 +118,19 @@ export class Chief {
     });
   }
 
+  /** #base/chief-<id> means "on top of that card's branch"; anything else is a branch name. */
+  private resolveBase(tag: string | undefined, self: string): { branch?: string; problem?: string } {
+    if (!tag) return {};
+    const ref = /^chief-([0-9a-f]{6})$/.exec(tag);
+    if (!ref) return { branch: tag };
+    if (ref[1] === self) return { problem: "#base/ points at this card itself" };
+    const branch = this.state.get(ref[1]!)?.branch;
+    return branch ? { branch } : { problem: `#base/${tag}: Chief has no branch for card #chief-${ref[1]} yet` };
+  }
+
   async cookCard(c: Claimed): Promise<Outcome | undefined> {
-    if (!c.repo) {
-      this.state.upsert({ id: c.id, title: c.title, repo: "", status: "blocked", reason: c.problem });
+    if (!c.repo || c.problem) {
+      this.state.upsert({ id: c.id, title: c.title, repo: c.repo?.name ?? "", status: "blocked", reason: c.problem });
       await this.send(this.cfg, { title: `Blocked: ${c.title}`, body: c.problem ?? "" });
       return undefined;
     }
@@ -126,7 +139,7 @@ export class Chief {
 
     let outcome: Outcome;
     try {
-      outcome = await cook(this.cfg, { id: c.id, title: c.title, notes: c.notes, repo: c.repo }, this.log);
+      outcome = await cook(this.cfg, { id: c.id, title: c.title, notes: c.notes, repo: c.repo, base: c.base }, this.log);
     } catch (err) {
       outcome = { status: "blocked", reason: `Chief error: ${(err as Error).message}`, summary: "", rounds: 0, branch: "", worktree: "" };
     }

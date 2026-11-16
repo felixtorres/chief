@@ -104,6 +104,18 @@ The Kanban plugin stores the board as plain markdown, which is what Chief reads 
 - Chief only ever takes cards from **Ready** (or one you name with `chief run --card`).
 - Chief owns only the text after `<br>🤖` on a card. Your title and notes are never rewritten.
 - If you edit the board while Chief is writing, Chief notices the file changed, re-reads, and retries instead of overwriting you.
+- When a card's PR is merged, Chief moves it to **Served** and removes its worktree and local `chief/` branch. Blocked and Pass cards keep theirs, so a retry continues where it stopped.
+
+### Stacking cards: `#base/`
+
+By default a card starts from `origin/<defaultBranch>` and its PR targets that branch. To build on work that isn't merged yet, tag the card:
+
+```markdown
+- [ ] Add the export endpoint #repo/nex-ts #base/chief-9c671b     ← on top of that card's branch
+- [ ] Fix the importer #repo/nex-ts #base/feature/releases        ← on top of any branch
+```
+
+The card's branch starts from that branch (fetched from origin, or the local branch if it isn't pushed), and its draft PR targets it, so the PR shows only this card's changes. Several cards can share the same base. Once the base merges, retarget the stacked PR to the default branch in Azure DevOps. A `#base/chief-<id>` that Chief has no branch for, or a branch that doesn't exist, sends the card to Blocked. The PR step needs the base branch on origin.
 
 ### Teams notifications
 

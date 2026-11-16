@@ -43,6 +43,7 @@ export async function createDraftPr(
   repo: RepoConfig,
   worktree: string,
   branch: string,
+  target: string,
   title: string,
   description: string,
 ): Promise<{ id: number; url: string }> {
@@ -50,7 +51,7 @@ export async function createDraftPr(
     "repos", "pr", "create",
     "--draft", "true",
     "--source-branch", branch,
-    "--target-branch", repo.defaultBranch,
+    "--target-branch", target,
     "--repository", repo.adoRepository,
     "--title", title.slice(0, 400),
     "--description", ...fitDescription(description).split("\n").map((l) => (l === "" ? " " : l)),

@@ -15,6 +15,13 @@ export interface CookInput {
   title: string;
   notes: string[];
   repo: RepoConfig;
+  /** Branch to start from and open the PR against; defaults to repo.defaultBranch. */
+  base?: string;
+}
+
+/** The branch a card starts from and its PR targets. */
+export function targetBranch(input: Pick<CookInput, "repo" | "base">): string {
+  return input.base ?? input.repo.defaultBranch;
 }
 
 export interface Outcome {
@@ -79,10 +86,14 @@ async function prepareWorktree(cfg: Config, input: CookInput): Promise<{ branch:
   const { repo, id, title } = input;
   const branch = `chief/${id}-${slugify(title)}`;
   const worktree = join(cfg.worktreesDir, `${repo.name}-${id}`);
-  let baseRef = repo.defaultBranch;
+  const target = targetBranch(input);
+  let baseRef = target;
   if (cfg.fetchBeforeBranch) {
-    const fetched = await git(["fetch", "origin", repo.defaultBranch], repo.path);
-    if (fetched.code === 0) baseRef = `origin/${repo.defaultBranch}`;
+    const fetched = await git(["fetch", "origin", target], repo.path);
+    if (fetched.code === 0) baseRef = `origin/${target}`;
+  }
+  if ((await git(["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`], repo.path)).code !== 0) {
+    throw new Error(`base branch "${target}" was not found on origin or locally in ${repo.name}`);
   }
   if (!existsSync(worktree)) {
     mkdirSync(cfg.worktreesDir, { recursive: true });
@@ -176,6 +187,7 @@ async function review(cfg: Config, input: CookInput, worktree: string, base: str
 function prDescription(input: CookInput, summary: string, checks: string, rev: Review, rounds: number, activity: string): string {
   return [
     `Automated by Chief (card \`#chief-${input.id}\`, ${rounds} round${rounds === 1 ? "" : "s"}).`,
+    ...(input.base ? ["", `Stacked on \`${input.base}\`: this PR targets that branch, so it shows only this card's changes. Once that branch merges, retarget this PR to \`${input.repo.defaultBranch}\`.`] : []),
     "",
     "## Summary",
     summary.trim() || "(no summary)",
@@ -303,7 +315,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     log(`[${input.id}] opening draft PR`);
     try {
       await pushBranch(worktree, branch);
-      const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
+      const pr = await createDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
       runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${rounds} round(s).` });
       return { ...outcome, prId: pr.id, prUrl: pr.url };
     } catch (err) {

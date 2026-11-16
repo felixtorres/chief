@@ -172,3 +172,32 @@ describe("Chief.cleanUp", () => {
     expect(existsSync(outside)).toBe(true);
   });
 });
+
+describe("#base/ tag", () => {
+  it("stacks a card on another card's branch with #base/chief-<id>", async () => {
+    const { git } = await import("../src/run.js");
+    const { cfg, chief, state } = setup({ Ready: ["Add feature file"] });
+    await chief.tick();
+    const first = state.byStatus("pass")[0]!;
+    const firstHead = (await git(["rev-parse", "HEAD"], first.worktree!)).stdout.trim();
+
+    const text = readFileSync(cfg.boardPath, "utf8").replace("## Ready\n\n", `## Ready\n\n- [ ] Follow-up work #base/chief-${first.id}\n`);
+    writeFileSync(cfg.boardPath, text);
+    await chief.tick();
+    const second = state.byStatus("pass").find((r) => r.id !== first.id)!;
+    expect(second.title).toBe("Follow-up work");
+    // The second card's branch contains the first card's commit.
+    const contains = await git(["merge-base", "--is-ancestor", firstHead, "HEAD"], second.worktree!);
+    expect(contains.code).toBe(0);
+  });
+
+  it("blocks when #base/ names a card Chief has no branch for, or a missing branch", async () => {
+    const { cfg, chief } = setup({ Ready: ["Stacked #base/chief-abcdef", "Missing base #base/feature/nope"] });
+    await chief.tick();
+    await chief.tick();
+    const blocked = readBoard(cfg.boardPath).lane("Blocked")!.cards;
+    expect(blocked.map((c) => c.cleanTitle)).toEqual(expect.arrayContaining(["Stacked", "Missing base"]));
+    expect(blocked.find((c) => c.cleanTitle === "Stacked")!.status).toContain("no branch for card #chief-abcdef");
+    expect(blocked.find((c) => c.cleanTitle === "Missing base")!.status).toContain('base branch "feature/nope" was not found');
+  });
+});
