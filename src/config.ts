@@ -62,6 +62,8 @@ export interface Config {
   fetchBeforeBranch: boolean;
   ado: { org?: string; project?: string };
   teamsWebhook?: string;
+  /** Weekday (0 = Sunday … 6 = Saturday) the weekly stats block goes into the digest; undefined = off. */
+  weeklyStatsDay?: number;
 }
 
 export const DEFAULT_CONFIG_PATH =
@@ -140,6 +142,16 @@ function strList(v: unknown, key: string, fallback: string[]): string[] {
     throw new ConfigError(`config: "${key}" must be an array of strings`);
   }
   return v as string[];
+}
+
+/** 0–6 (Sunday–Saturday), default Monday; false turns the weekly block off. */
+function weekday(v: unknown, key: string): number | undefined {
+  if (v === undefined || v === null) return 1;
+  if (v === false) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 6) {
+    throw new ConfigError(`config: "${key}" must be 0–6 (0 = Sunday) or false`);
+  }
+  return v;
 }
 
 function bool(v: unknown, key: string, fallback: boolean): boolean {
@@ -226,6 +238,7 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     fetchBeforeBranch: bool(r.fetchBeforeBranch, "fetchBeforeBranch", true),
     ado: adoSettings(r.ado, "ado"),
     teamsWebhook: r.teamsWebhook ? str(r.teamsWebhook, "teamsWebhook") : undefined,
+    weeklyStatsDay: weekday(r.weeklyStatsDay, "weeklyStatsDay"),
   };
 }
 

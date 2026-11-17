@@ -82,8 +82,11 @@ export interface Stats {
   costReported: number;
 }
 
-export function computeStats(events: LedgerEvent[], opts: { repo?: string; since: Date }): Stats {
-  const inScope = events.filter((e) => (!opts.repo || e.repo === opts.repo) && new Date(e.at) >= opts.since);
+export function computeStats(events: LedgerEvent[], opts: { repo?: string; since: Date; until?: Date }): Stats {
+  const inScope = events.filter((e) => {
+    const t = new Date(e.at);
+    return (!opts.repo || e.repo === opts.repo) && t >= opts.since && (!opts.until || t < opts.until);
+  });
   const runs = inScope.filter((e): e is Extract<LedgerEvent, { kind: "run" }> => e.kind === "run");
   const s: Stats = {
     repo: opts.repo,
@@ -152,4 +155,57 @@ export function formatStats(s: Stats, weeks: number): string {
     row("served / abandoned", `${s.served} / ${s.abandoned}`),
     row("cost", `$${s.costUsd.toFixed(2)}`, s.costReported < s.attempts ? `(reported on ${s.costReported} of ${s.attempts})` : ""),
   ].join("\n");
+}
+
+export const WEEKLY_MARKER = "<!-- chief:weekly-stats -->";
+const DAY_MS = 24 * 3600_000;
+
+function ymd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function statsRow(name: string, s: Stats): string {
+  const reasons = Object.entries(s.blockedBy).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ");
+  return `| ${name} | ${s.attempts} | ${pct(s.passed, s.attempts)} | ${pct(s.firstPass, s.attempts)} | ${s.meanRounds.toFixed(1)} | ${s.blocked}${reasons ? ` (${reasons})` : ""} | ${s.served} / ${s.abandoned} | $${s.costUsd.toFixed(2)} |`;
+}
+
+/**
+ * Markdown block for the digest: the 7 full days before `now` (local midnight to midnight),
+ * one row per repo plus a total, and the first-pass rate against the week before.
+ * Undefined when nothing happened that week.
+ */
+export function weeklyStatsBlock(events: LedgerEvent[], repos: string[], now = new Date()): string | undefined {
+  const until = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const since = new Date(until.getTime() - 7 * DAY_MS);
+  const prevSince = new Date(since.getTime() - 7 * DAY_MS);
+  const total = computeStats(events, { since, until });
+  if (!total.attempts && !total.served && !total.abandoned) return undefined;
+  const prev = computeStats(events, { since: prevSince, until: since });
+
+  const lastDay = new Date(until.getTime() - DAY_MS);
+  const lines = [
+    "",
+    WEEKLY_MARKER,
+    `## 📊 Weekly stats · ${ymd(since)} → ${ymd(lastDay)}`,
+    "",
+    "| repo | attempts | passed | first-pass | mean rounds | blocked | served / abandoned | cost |",
+    "|---|---|---|---|---|---|---|---|",
+  ];
+  const active = repos
+    .map((r) => [r, computeStats(events, { repo: r, since, until })] as const)
+    .filter(([, st]) => st.attempts || st.served || st.abandoned);
+  for (const [name, st] of active) lines.push(statsRow(name, st));
+  if (active.length !== 1) lines.push(statsRow("**all**", total));
+
+  const notes: string[] = [];
+  if (prev.attempts) {
+    notes.push(`First-pass ${pct(total.firstPass, total.attempts)} vs ${pct(prev.firstPass, prev.attempts)} the week before; mean rounds ${total.meanRounds.toFixed(1)} vs ${prev.meanRounds.toFixed(1)}.`);
+  } else {
+    notes.push("No runs the week before to compare with.");
+  }
+  if (total.withDenials) notes.push(`${total.withDenials} attempt(s) hit allowlist denials.`);
+  if (total.ruleFileEdits) notes.push(`${total.ruleFileEdits} attempt(s) edited agent rule files (🔴).`);
+  if (total.costReported < total.attempts) notes.push(`Cost reported on ${total.costReported} of ${total.attempts} attempts.`);
+  lines.push("", ...notes.map((n) => `- ${n}`), "");
+  return lines.join("\n");
 }

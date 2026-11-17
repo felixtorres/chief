@@ -86,7 +86,7 @@ tail -f ~/Library/Logs/chief/chief.log
 
 Each repo can also set `"ado": { "org", "project" }` when it lives in a different Azure DevOps org or project than the top-level `ado`.
 
-Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
+Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
 
 ## The board
 
@@ -147,6 +147,7 @@ Cooking the same card again adds a new attempt at the top and keeps the earlier 
 ```bash
 chief status                      # lane counts + recent runs
 chief stats [--repo api] [--weeks 4]  # first-pass rate, mean rounds, why cards got blocked, cost
+chief stats --digest              # write last week's stats table into today's digest now (the daemon does it every Monday)
 chief run                         # cook the next Ready card now (no need to wait for the poll)
 scripts/launchd.sh restart        # after editing config or pulling an update (run npm run build first)
 scripts/launchd.sh uninstall

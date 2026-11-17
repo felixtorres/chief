@@ -1,6 +1,7 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.js";
+import { readLedger, WEEKLY_MARKER, weeklyStatsBlock } from "./ledger.js";
 import { run } from "./run.js";
 
 export interface Note {
@@ -13,12 +14,29 @@ function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+function digestFile(cfg: Config, now: Date): string {
+  return join(cfg.digestDir, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.md`);
+}
+
 export function appendDigest(cfg: Config, note: Note, now = new Date()): string {
   mkdirSync(cfg.digestDir, { recursive: true });
-  const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const file = join(cfg.digestDir, `${day}.md`);
+  const file = digestFile(cfg, now);
   const link = note.url ? ` [PR](${note.url})` : "";
   appendFileSync(file, `- ${pad(now.getHours())}:${pad(now.getMinutes())} **${note.title}**: ${note.body.replace(/\n+/g, " ")}${link}\n`);
+  return file;
+}
+
+/**
+ * Add last week's stats to today's digest, once per day. Returns the file written, or
+ * undefined if it was already there or there was nothing to report.
+ */
+export function writeWeeklyStats(cfg: Config, now = new Date()): string | undefined {
+  const file = digestFile(cfg, now);
+  if (existsSync(file) && readFileSync(file, "utf8").includes(WEEKLY_MARKER)) return undefined;
+  const block = weeklyStatsBlock(readLedger(cfg.ledgerFile), Object.keys(cfg.repos), now);
+  if (!block) return undefined;
+  mkdirSync(cfg.digestDir, { recursive: true });
+  appendFileSync(file, block);
   return file;
 }
 

@@ -2,7 +2,7 @@ import { prStatus } from "./ado.js";
 import { type Card, updateBoard } from "./board.js";
 import { appendLedger, categorize } from "./ledger.js";
 import type { Config, RepoConfig } from "./config.js";
-import { notify, type Note } from "./notify.js";
+import { notify, writeWeeklyStats, type Note } from "./notify.js";
 import { cook, removeWorktree, type Log, type Outcome } from "./pipeline.js";
 import type { Blast, StateStore } from "./state.js";
 
@@ -226,9 +226,23 @@ export class Chief {
     }
   }
 
+  /** On the configured weekday, put last week's stats in the digest (once). Never fails the loop. */
+  weeklyStats(now = new Date()): string | undefined {
+    if (this.cfg.weeklyStatsDay === undefined || now.getDay() !== this.cfg.weeklyStatsDay) return undefined;
+    try {
+      const file = writeWeeklyStats(this.cfg, now);
+      if (file) this.log(`weekly stats written to ${file}`);
+      return file;
+    } catch (err) {
+      this.log(`weekly stats failed: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
   /** One pass of the loop. Returns true if a card was handled. */
   async tick(selector?: string): Promise<boolean> {
     await this.checkServed();
+    this.weeklyStats();
     const claimed = this.claim(selector);
     if (!claimed) return false;
     await this.cookCard(claimed);

@@ -10,7 +10,7 @@ import { Chief } from "./chief.js";
 import { callClaude } from "./claude.js";
 import { ConfigError, DEFAULT_CONFIG_PATH, expandHome, loadConfig, type Config } from "./config.js";
 import { computeStats, formatStats, readLedger } from "./ledger.js";
-import { notify } from "./notify.js";
+import { notify, writeWeeklyStats } from "./notify.js";
 import { git, killAll, run } from "./run.js";
 import { StateStore } from "./state.js";
 
@@ -25,6 +25,7 @@ Usage:
   chief daemon                                watch the board forever (what launchd runs)
   chief status                                board lanes + recent runs
   chief stats [--repo <name>] [--weeks <n>]   pass rate, rounds, blocked reasons (default 4 weeks)
+  chief stats --digest                        write last week's stats into today's digest now
 
 Options:
   --config <path>   config file (default: ${DEFAULT_CONFIG_PATH}, or $CHIEF_CONFIG)`;
@@ -188,6 +189,7 @@ async function main(): Promise<number> {
       card: { type: "string" },
       repo: { type: "string" },
       weeks: { type: "string" },
+      digest: { type: "boolean", default: false },
       smoke: { type: "boolean", default: false },
       notify: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -205,8 +207,15 @@ async function main(): Promise<number> {
     case "status":
       status(cfgOrExit(configPath));
       return 0;
-    case "stats":
-      return stats(cfgOrExit(configPath), values.repo, values.weeks);
+    case "stats": {
+      const cfg = cfgOrExit(configPath);
+      if (values.digest) {
+        const file = writeWeeklyStats(cfg);
+        console.log(file ? `weekly stats written to ${file}` : "nothing written: no runs last week, or today's digest already has them");
+        return 0;
+      }
+      return stats(cfg, values.repo, values.weeks);
+    }
     case "run": {
       const cfg = cfgOrExit(configPath);
       const chief = new Chief(cfg, new StateStore(cfg.stateFile));
