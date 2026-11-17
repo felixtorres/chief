@@ -44,6 +44,8 @@ export interface Outcome {
   category?: BlockCategory;
   /** Rule files (REVIEW.md, CLAUDE.md, .claude/) the worker's diff touches. */
   ruleFiles?: string[];
+  /** The commit Chief pushed for the PR. */
+  pushedHead?: string;
 }
 
 export interface Review {
@@ -342,9 +344,10 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     log(`[${input.id}] opening draft PR`);
     try {
       await pushBranch(worktree, branch);
+      const pushedHead = await mustGit(["rev-parse", "HEAD"], worktree);
       const pr = await createDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
       runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${rounds} round(s).` });
-      return { ...outcome, prId: pr.id, prUrl: pr.url };
+      return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead };
     } catch (err) {
       return blocked(`work is ready on branch ${branch} but the PR step failed: ${(err as Error).message}`, rounds, summary);
     }
@@ -399,8 +402,9 @@ export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => 
   ].join("\n");
   try {
     await pushBranch(worktree, branch);
+    const pushedHead = await mustGit(["rev-parse", "HEAD"], worktree);
     const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, description);
-    return { ...outcome, prId: pr.id, prUrl: pr.url };
+    return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead };
   } catch (err) {
     return blocked(`rule is committed on branch ${branch} but the PR step failed: ${(err as Error).message}`);
   }

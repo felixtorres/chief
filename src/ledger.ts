@@ -19,7 +19,9 @@ export type LedgerEvent =
       ruleFiles?: string[];
     } & Partial<RunMetrics>)
   | { kind: "served" | "abandoned"; at: string; id: string; repo: string }
-  | { kind: "reflect"; at: string; id: string; repo: string; proposals: number; dropped: number; error?: string };
+  | { kind: "reflect"; at: string; id: string; repo: string; proposals: number; dropped: number; error?: string; signal?: string }
+  | { kind: "corrected"; at: string; id: string; repo: string; files: number; insertions: number; deletions: number }
+  | { kind: "reverted"; at: string; id: string; repo: string; sha: string };
 
 export function categorize(reason = ""): BlockCategory {
   if (/^interrupted/i.test(reason)) return "interrupted";
@@ -81,6 +83,10 @@ export interface Stats {
   abandoned: number;
   costUsd: number;
   costReported: number;
+  /** Served PRs you changed before merging. */
+  corrected: number;
+  reverted: number;
+  recipesProposed: number;
 }
 
 export function computeStats(events: LedgerEvent[], opts: { repo?: string; since: Date; until?: Date }): Stats {
@@ -105,6 +111,9 @@ export function computeStats(events: LedgerEvent[], opts: { repo?: string; since
     abandoned: inScope.filter((e) => e.kind === "abandoned").length,
     costUsd: 0,
     costReported: 0,
+    corrected: inScope.filter((e) => e.kind === "corrected").length,
+    reverted: inScope.filter((e) => e.kind === "reverted").length,
+    recipesProposed: inScope.reduce((n, e) => n + (e.kind === "reflect" ? e.proposals : 0), 0),
   };
   let roundSum = 0;
   let roundRuns = 0;
@@ -154,6 +163,9 @@ export function formatStats(s: Stats, weeks: number): string {
     row("with denials", s.withDenials),
     row("rule-file edits", s.ruleFileEdits),
     row("served / abandoned", `${s.served} / ${s.abandoned}`),
+    row("corrected by you", s.corrected, s.served ? `${pct(s.corrected, s.served)} of served` : ""),
+    row("reverted", s.reverted),
+    row("recipes proposed", s.recipesProposed),
     row("cost", `$${s.costUsd.toFixed(2)}`, s.costReported < s.attempts ? `(reported on ${s.costReported} of ${s.attempts})` : ""),
   ].join("\n");
 }
@@ -180,7 +192,7 @@ export function weeklyStatsBlock(events: LedgerEvent[], repos: string[], now = n
   const since = new Date(until.getTime() - 7 * DAY_MS);
   const prevSince = new Date(since.getTime() - 7 * DAY_MS);
   const total = computeStats(events, { since, until });
-  if (!total.attempts && !total.served && !total.abandoned) return undefined;
+  if (!total.attempts && !total.served && !total.abandoned && !total.reverted) return undefined;
   const prev = computeStats(events, { since: prevSince, until: since });
 
   const lastDay = new Date(until.getTime() - DAY_MS);
@@ -206,6 +218,9 @@ export function weeklyStatsBlock(events: LedgerEvent[], repos: string[], now = n
   }
   if (total.withDenials) notes.push(`${total.withDenials} attempt(s) hit allowlist denials.`);
   if (total.ruleFileEdits) notes.push(`${total.ruleFileEdits} attempt(s) edited agent rule files (🔴).`);
+  if (total.served) notes.push(`You corrected ${total.corrected} of ${total.served} served PR(s) before merging.`);
+  if (total.reverted) notes.push(`${total.reverted} merged PR(s) were reverted.`);
+  if (total.recipesProposed) notes.push(`${total.recipesProposed} recipe(s) proposed: see the Recipes lane.`);
   if (total.costReported < total.attempts) notes.push(`Cost reported on ${total.costReported} of ${total.attempts} attempts.`);
   lines.push("", ...notes.map((n) => `- ${n}`), "");
   return lines.join("\n");

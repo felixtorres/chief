@@ -3,6 +3,10 @@ import { git, run, tail } from "./run.js";
 
 export class AdoError extends Error {}
 
+function az(cfg: Config, args: string[], opts: Parameters<typeof run>[2]) {
+  return run(cfg.azCmd[0]!, [...cfg.azCmd.slice(1), ...args], opts);
+}
+
 /** The repo's own ado settings win over the top-level ones. */
 export function adoFor(cfg: Config, repo: RepoConfig): { org?: string; project?: string } {
   return { org: repo.ado.org ?? cfg.ado.org, project: repo.ado.project ?? cfg.ado.project };
@@ -58,7 +62,7 @@ export async function createDraftPr(
     "--output", "json",
     ...orgArgs(cfg, repo),
   ];
-  const r = await run("az", args, { cwd: worktree, timeoutMs: 120_000 });
+  const r = await az(cfg, args, { cwd: worktree, timeoutMs: 120_000 });
   if (r.code !== 0) throw new AdoError(`az repos pr create failed: ${tail(r.stderr || r.stdout, 500)}`);
   let data: { pullRequestId?: number; repository?: { webUrl?: string } };
   try {
@@ -71,13 +75,36 @@ export async function createDraftPr(
   return { id: data.pullRequestId, url: web ? `${web}/pullrequest/${data.pullRequestId}` : "" };
 }
 
+export interface PrDetails {
+  /** "active" | "completed" | "abandoned" */
+  status: string;
+  /** The PR's final source commit (what was merged, including anything you pushed). */
+  sourceCommit?: string;
+  /** The merge commit on the target branch. */
+  mergeCommit?: string;
+  closedDate?: string;
+}
+
+/** The PR's status and final commits, or undefined if Azure DevOps couldn't be reached. */
+export async function prDetails(cfg: Config, repo: RepoConfig, id: number): Promise<PrDetails | undefined> {
+  const { org } = adoFor(cfg, repo);
+  const r = await az(cfg, ["repos", "pr", "show", "--id", String(id), "--output", "json", ...(org ? ["--org", org] : [])], { cwd: repo.path, timeoutMs: 60_000 });
+  if (r.code !== 0) return undefined;
+  try {
+    const d = JSON.parse(r.stdout) as {
+      status?: string;
+      lastMergeSourceCommit?: { commitId?: string };
+      lastMergeCommit?: { commitId?: string };
+      closedDate?: string;
+    };
+    if (!d.status) return undefined;
+    return { status: d.status, sourceCommit: d.lastMergeSourceCommit?.commitId, mergeCommit: d.lastMergeCommit?.commitId, closedDate: d.closedDate };
+  } catch {
+    return undefined;
+  }
+}
+
 /** "active" | "completed" | "abandoned", or undefined if Azure DevOps couldn't be reached. */
 export async function prStatus(cfg: Config, repo: RepoConfig, id: number): Promise<string | undefined> {
-  const { org } = adoFor(cfg, repo);
-  const r = await run(
-    "az",
-    ["repos", "pr", "show", "--id", String(id), "--query", "status", "--output", "tsv", ...(org ? ["--org", org] : [])],
-    { cwd: repo.path, timeoutMs: 60_000 },
-  );
-  return r.code === 0 ? r.stdout.trim() || undefined : undefined;
+  return (await prDetails(cfg, repo, id))?.status;
 }

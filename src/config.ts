@@ -49,6 +49,10 @@ export interface Config {
   reflector: boolean;
   /** At most this many reflector calls per day (default 5). */
   reflectorDailyCap: number;
+  /** Warn on rule proposals once a repo's "## Chief recipes" section has this many rules (default 30). */
+  recipeBudget: number;
+  /** How to run the Azure CLI (default ["az"]; tests use a fake). */
+  azCmd: string[];
   /**
    * Which of your own Claude Code settings files workers load ("user,project,local" are the
    * options). Default "" loads none, so allow rules you approved interactively never leak in.
@@ -235,6 +239,8 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     learnedFile: expandHome(str(r.learnedFile, "learnedFile", join(homedir(), ".config", "chief", "learned.json")), baseDir),
     reflector: bool(r.reflector, "reflector", true),
     reflectorDailyCap: num(r.reflectorDailyCap, "reflectorDailyCap", 5),
+    recipeBudget: num(r.recipeBudget, "recipeBudget", 30),
+    azCmd: strList(r.azCmd, "azCmd", ["az"]),
     settingSources: r.settingSources === undefined ? "" : strAllowEmpty(r.settingSources, "settingSources"),
     strictMcpConfig: bool(r.strictMcpConfig, "strictMcpConfig", true),
     pollSeconds: num(r.pollSeconds, "pollSeconds", 300),

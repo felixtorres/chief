@@ -86,7 +86,7 @@ tail -f ~/Library/Logs/chief/chief.log
 
 Each repo can also set `"ado": { "org", "project" }` when it lives in a different Azure DevOps org or project than the top-level `ado`.
 
-Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `recipesFile` (default `~/.local/state/chief/recipes.json`), `learnedFile` (allowlist entries from approved `allow-tool` recipes; default `~/.config/chief/learned.json`), `reflector` (default `true`), `reflectorDailyCap` (default `5`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
+Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `recipesFile` (default `~/.local/state/chief/recipes.json`), `learnedFile` (allowlist entries from approved `allow-tool` recipes; default `~/.config/chief/learned.json`), `reflector` (default `true`), `reflectorDailyCap` (default `5`), `recipeBudget` (default `30`), `azCmd` (default `["az"]`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
 
 ## The board
 
@@ -135,6 +135,15 @@ Cooking the same card again adds a new attempt at the top and keeps the earlier 
 ## Recipe book: Chief learns from its own runs
 
 When a card goes badly, Chief asks a fresh, read-only Claude session what single rule would have prevented it. That covers more than one round, a Blocked card (for a work reason, not an outage), an allowlist denial, or an edit to rule files. A clean one-round pass costs nothing extra, and there are at most `reflectorDailyCap` (default 5) reflections a day.
+
+It also learns from what happens after the PR, which is the strongest signal it gets:
+
+- **Your corrections.** Chief remembers the commit it pushed. When the PR completes, it compares that with the PR's final source commit (`lastMergeSourceCommit`). If you pushed fixes, Chief saves the diff (`tracesDir/<id>/correction.diff`), marks the Served card `✏️ you edited N files`, and asks the reflector which rule would have made Chief write it your way. Only your own commits on the branch count, so merging the target branch in to resolve conflicts doesn't. While a PR is open, Chief fetches its branch on each check, so your fixes are local even if ADO deletes the branch on merge.
+- **Reverts.** For 14 days after a merge, Chief watches the target branch for a commit that reverts it (`git revert`'s "This reverts commit …", or an ADO "Revert '<title>'" PR). The card gets `↩️ reverted`, you get a notification, and the reflector looks for what a rule could have caught.
+- **Abandoned PRs** go to the reflector too. It proposes nothing if the reason was outside the work.
+- **Rule budget.** Once a repo's `## Chief recipes` section reaches `recipeBudget` rules (default 30), new rules for that file come with a warning, and the reflector is told to propose only merges or replacements.
+
+`chief stats` and the weekly digest count corrections, reverts and proposed recipes.
 
 The reflector proposes up to 2 rules, preferring the most mechanical one that works:
 
@@ -195,5 +204,4 @@ npm run build
 - Backlog triage (RICE + blast radius annotations on Backlog cards)
 - Morning digest notification
 - Several stations: per-repo concurrency and rules
-- Recipe book R3: learn from the fixes you push to a Chief PR before merging, and from reverts
 - Recipe book R4: replay past cards to test a rule before you approve it; skill proposals

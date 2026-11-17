@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseConfig, type Config } from "../src/config.js";
 
 export const FAKE_CLAUDE = fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url));
+export const FAKE_AZ = fileURLToPath(new URL("./fixtures/fake-az.mjs", import.meta.url));
 
 for (const [k, v] of Object.entries({
   GIT_AUTHOR_NAME: "Chief Test",
@@ -44,6 +45,7 @@ export function makeConfig(root: string, repo: string, overrides: Record<string,
     runsDir: join(root, "runs"),
     tracesDir: join(root, "traces"),
     claudeCmd: [process.execPath, FAKE_CLAUDE],
+    azCmd: [process.execPath, FAKE_AZ],
     openPr: false,
     fetchBeforeBranch: false,
     defaultRepo: "demo",
@@ -72,4 +74,5 @@ export function resetFakeEnv(): void {
   delete process.env.FAKE_REVIEW;
   delete process.env.FAKE_DENY;
   delete process.env.FAKE_REFLECT;
+  delete process.env.FAKE_AZ_PR;
 }

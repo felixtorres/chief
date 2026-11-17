@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { prStatus } from "./ado.js";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { prDetails, type PrDetails } from "./ado.js";
 import { Card, Lane, laneKey, readBoard, updateBoard } from "./board.js";
 import type { Config, RepoConfig } from "./config.js";
 import { appendLedger, categorize, readLedger, reflectionsOn } from "./ledger.js";
@@ -9,7 +10,10 @@ import {
   addLearnedTool, allowToolProblem, KIND_LABEL, newRecipeId, RecipeStore, recipeCardNotes, recipeCardText, recipeTextFromTitle, RULE_FILE,
   type Recipe,
 } from "./recipes.js";
+import { abandonedSignal, correctionDiff, correctionSignal, findRevert, revertSignal } from "./learn.js";
 import { isInteresting, reflect } from "./reflect.js";
+import { git } from "./run.js";
+import type { RunRecord } from "./state.js";
 import type { Blast, StateStore } from "./state.js";
 
 export interface Claimed {
@@ -28,6 +32,8 @@ export type Notifier = (cfg: Config, note: Note) => Promise<unknown>;
 
 const BLAST_ICON: Record<Blast, string> = { green: "🟢", yellow: "🟡", red: "🔴" };
 const SERVED_CHECK_MS = 10 * 60_000;
+const REVERT_WATCH_DAYS = 14;
+const DAY_MS = 24 * 3600_000;
 
 function hhmm(d = new Date()): string {
   return d.toTimeString().slice(0, 5);
@@ -211,6 +217,8 @@ export class Chief {
       blast: outcome.blast,
       reason: outcome.reason,
       summary: outcome.summary,
+      pushedHead: outcome.pushedHead,
+      target: c.base ?? repo.defaultBranch,
     });
 
     if (outcome.status === "pass") {
@@ -268,6 +276,7 @@ export class Chief {
     this.state.upsert({
       id: c.id, status: outcome.status, branch: outcome.branch || undefined, worktree: outcome.worktree || undefined,
       prId: outcome.prId, prUrl: outcome.prUrl, rounds: 0, reason: outcome.reason, summary: outcome.summary,
+      pushedHead: outcome.pushedHead, target: repo.defaultBranch,
     });
     if (outcome.status === "pass") {
       this.recipes.update(r.id, { status: "applied", prId: outcome.prId, prUrl: outcome.prUrl });
@@ -284,19 +293,19 @@ export class Chief {
   }
 
   /** After a run that went wrong: ask the reflector for recipes and put them on the board. */
-  private async maybeReflect(c: Claimed, repo: RepoConfig, outcome: Outcome): Promise<Recipe[]> {
-    if (!this.cfg.reflector || !isInteresting(outcome)) return [];
+  private async maybeReflect(c: { id: string; title: string }, repo: RepoConfig, outcome: Outcome, signal?: { kind: string; text: string }): Promise<Recipe[]> {
+    if (!this.cfg.reflector || (!signal && !isInteresting(outcome))) return [];
     if (reflectionsOn(readLedger(this.cfg.ledgerFile)) >= this.cfg.reflectorDailyCap) {
       this.log(`[${c.id}] reflector skipped: daily cap of ${this.cfg.reflectorDailyCap} reached`);
       return [];
     }
     try {
-      this.log(`[${c.id}] reflecting on the run`);
-      const res = await reflect(this.cfg, { id: c.id, title: c.title, repo }, outcome, this.recipes.byRepo(repo.name));
+      this.log(`[${c.id}] reflecting on the ${signal ? signal.kind : "run"}`);
+      const res = await reflect(this.cfg, { id: c.id, title: c.title, repo }, outcome, this.recipes.byRepo(repo.name), signal?.text);
       const fresh = res.proposals.filter((p) => !this.recipes.has(repo.name, p.dedupeKey));
       const dropped = [...res.dropped, ...res.proposals.filter((p) => !fresh.includes(p)).map((p) => `already known: ${p.dedupeKey}`)];
       appendLedger(this.cfg.ledgerFile, {
-        kind: "reflect", at: new Date().toISOString(), id: c.id, repo: repo.name, proposals: fresh.length, dropped: dropped.length, error: res.error,
+        kind: "reflect", at: new Date().toISOString(), id: c.id, repo: repo.name, proposals: fresh.length, dropped: dropped.length, error: res.error, signal: signal?.kind,
       });
       if (res.error) this.log(`[${c.id}] ${res.error}`);
       if (dropped.length) this.log(`[${c.id}] reflector proposals dropped: ${dropped.join("; ")}`);
@@ -310,7 +319,12 @@ export class Chief {
           lane = new Lane(this.cfg.lanes.recipes);
           board.lanes.push(lane);
         }
-        for (const d of drafts) lane.cards.push(new Card(false, recipeCardText(d), recipeCardNotes(d)));
+        for (const d of drafts) {
+          const file = RULE_FILE[d.kind];
+          const count = file ? (res.ruleCounts?.[file] ?? 0) : 0;
+          const warn = file && count >= this.cfg.recipeBudget ? [`\t⚠ ${file} already has ${count} Chief recipes (budget ${this.cfg.recipeBudget}): merge or drop some`] : [];
+          lane.cards.push(new Card(false, recipeCardText(d), [...recipeCardNotes(d), ...warn]));
+        }
       });
       const added = drafts.map((d) => this.recipes.add(d));
       this.log(`[${c.id}] proposed ${added.length} recipe(s): ${added.map((r) => r.id).join(", ")}`);
@@ -357,21 +371,91 @@ export class Chief {
     for (const run of this.state.byStatus("pass")) {
       const repo = this.cfg.repos[run.repo];
       if (!run.prId || !repo) continue;
-      const status = await prStatus(this.cfg, repo, run.prId);
-      if (status === "completed") {
-        this.state.upsert({ id: run.id, status: "served" });
-        appendLedger(this.cfg.ledgerFile, { kind: "served", at: new Date().toISOString(), id: run.id, repo: run.repo });
+      const pr = await prDetails(this.cfg, repo, run.prId);
+      if (pr?.status === "completed") {
+        const servedAt = new Date().toISOString();
+        this.state.upsert({ id: run.id, status: "served", servedAt, mergeCommit: pr.mergeCommit });
+        appendLedger(this.cfg.ledgerFile, { kind: "served", at: servedAt, id: run.id, repo: run.repo });
         const recipe = this.recipes.byCard(run.id);
         if (recipe) this.recipes.update(recipe.id, { status: "merged" });
-        this.moveCard(run.id, this.cfg.lanes.served, `✅ merged · [PR !${run.prId}](${run.prUrl})`);
+        // Before cleanUp: the correction diff needs Chief's pushed commit, which lives on the local branch.
+        const edited = recipe ? undefined : await this.learnFromCorrection(run, repo, pr);
+        this.moveCard(run.id, this.cfg.lanes.served, `✅ merged · [PR !${run.prId}](${run.prUrl})${edited ? ` · ✏️ ${edited}` : ""}`);
         this.log(`[${run.id}] served (PR !${run.prId} completed)`);
         await this.cleanUp(run.id);
-      } else if (status === "abandoned") {
+      } else if (pr?.status === "abandoned") {
         this.state.upsert({ id: run.id, status: "blocked", reason: "PR abandoned" });
         appendLedger(this.cfg.ledgerFile, { kind: "abandoned", at: new Date().toISOString(), id: run.id, repo: run.repo });
         const recipe = this.recipes.byCard(run.id);
         if (recipe) this.recipes.update(recipe.id, { status: "failed", reason: "PR abandoned" });
         this.moveCard(run.id, this.cfg.lanes.blocked, `🚧 PR !${run.prId} was abandoned`);
+        if (!recipe) await this.maybeReflect(run, repo, this.pastOutcome(run), { kind: "abandoned PR", text: abandonedSignal(run.id) });
+      } else if (pr?.status === "active" && run.pushedHead && run.branch) {
+        // Keep a local copy of anything you push to the PR: ADO may delete the branch on merge.
+        await git(["fetch", "origin", run.branch], repo.path);
+      }
+    }
+    await this.watchReverts();
+  }
+
+  /** Run log of a finished card, as the reflector expects it. */
+  private pastOutcome(run: RunRecord): Outcome {
+    return {
+      status: "pass", summary: run.summary ?? "", rounds: run.rounds, branch: run.branch ?? "", worktree: "",
+      runLog: join(this.cfg.runsDir, `chief-${run.id}.md`), blast: run.blast,
+    };
+  }
+
+  /**
+   * Did you change the PR before merging? Save the diff, log it, and let the reflector learn
+   * from it. Returns a short note for the card ("you edited 2 files"), or undefined.
+   */
+  private async learnFromCorrection(run: RunRecord, repo: RepoConfig, pr: PrDetails): Promise<string | undefined> {
+    try {
+      const c = await correctionDiff(repo, run, pr.sourceCommit);
+      if (c === undefined) return undefined;
+      if (c === "none") {
+        this.state.upsert({ id: run.id, corrected: false });
+        return undefined;
+      }
+      this.state.upsert({ id: run.id, corrected: true });
+      const dir = join(this.cfg.tracesDir, run.id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "correction.diff"), c.patch);
+      appendLedger(this.cfg.ledgerFile, {
+        kind: "corrected", at: new Date().toISOString(), id: run.id, repo: run.repo, files: c.files.length, insertions: c.insertions, deletions: c.deletions,
+      });
+      this.log(`[${run.id}] you corrected ${c.files.length} file(s) before merging: ${c.files.join(", ")}`);
+      await this.maybeReflect(run, repo, this.pastOutcome(run), { kind: "correction", text: correctionSignal(run.id, c) });
+      return `you edited ${c.files.length} file${c.files.length === 1 ? "" : "s"}`;
+    } catch (err) {
+      this.log(`[${run.id}] correction check failed: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /** For two weeks after a merge, look for a commit on the target branch that reverts it. */
+  async watchReverts(now = new Date()): Promise<void> {
+    const fetched = new Set<string>();
+    for (const run of this.state.byStatus("served")) {
+      if (run.revertedAt || !run.servedAt || this.recipes.byCard(run.id)) continue;
+      const age = now.getTime() - new Date(run.servedAt).getTime();
+      if (age > REVERT_WATCH_DAYS * DAY_MS) continue;
+      const repo = this.cfg.repos[run.repo];
+      if (!repo) continue;
+      try {
+        const revert = await findRevert(repo, run.target ?? repo.defaultBranch, { mergeCommit: run.mergeCommit, title: run.title, since: run.servedAt }, fetched);
+        if (!revert) continue;
+        const at = now.toISOString();
+        this.state.upsert({ id: run.id, revertedAt: at });
+        appendLedger(this.cfg.ledgerFile, { kind: "reverted", at, id: run.id, repo: run.repo, sha: revert.sha });
+        this.moveCard(run.id, this.cfg.lanes.served, `↩️ reverted in \`${revert.sha.slice(0, 8)}\` · [PR !${run.prId}](${run.prUrl})`);
+        this.log(`[${run.id}] reverted by ${revert.sha.slice(0, 8)}: ${revert.subject}`);
+        await this.send(this.cfg, { title: `Reverted: ${run.title}`, body: revert.subject, url: run.prUrl });
+        const days = Math.max(1, Math.round(age / DAY_MS));
+        await this.maybeReflect(run, repo, this.pastOutcome(run), { kind: "revert", text: revertSignal(run.id, revert, days) });
+      } catch (err) {
+        this.log(`[${run.id}] revert check failed: ${(err as Error).message}`);
       }
     }
   }

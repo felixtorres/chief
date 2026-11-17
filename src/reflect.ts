@@ -4,7 +4,7 @@ import { callClaude } from "./claude.js";
 import type { Config, RepoConfig } from "./config.js";
 import { workerTools, type Outcome } from "./pipeline.js";
 import { reflectPrompt } from "./prompts.js";
-import { KIND_LABEL, parseProposals, type Proposal, type Recipe } from "./recipes.js";
+import { KIND_LABEL, parseProposals, recipesSection, type Proposal, type Recipe } from "./recipes.js";
 import { git } from "./run.js";
 
 const MAX_LOG_CHARS = 40_000;
@@ -49,6 +49,12 @@ export interface Reflection {
   proposals: Proposal[];
   dropped: string[];
   error?: string;
+  /** Rules under "## Chief recipes" per rule file on the target branch. */
+  ruleCounts?: Record<string, number>;
+}
+
+export function countRules(content: string): number {
+  return recipesSection(content).split("\n").filter((l) => /^- \S/.test(l)).length;
 }
 
 /** Read-only claude -p over the card's run log; returns vetted proposals (not yet stored). */
@@ -57,6 +63,7 @@ export async function reflect(
   card: { id: string; title: string; repo: RepoConfig },
   outcome: Outcome,
   known: Recipe[],
+  signal?: string,
 ): Promise<Reflection> {
   let runLog: string;
   try {
@@ -64,16 +71,24 @@ export async function reflect(
   } catch (err) {
     return { proposals: [], dropped: [], error: `run log unreadable: ${(err as Error).message}` };
   }
+  const review = await fromTarget(card.repo, "REVIEW.md");
+  const claude = await fromTarget(card.repo, "CLAUDE.md");
+  const ruleCounts = { "REVIEW.md": countRules(review), "CLAUDE.md": countRules(claude) };
+  const overBudget = Object.entries(ruleCounts)
+    .filter(([, n]) => n >= cfg.recipeBudget)
+    .map(([f, n]) => `${f} already has ${n} Chief recipes (budget ${cfg.recipeBudget})`);
   const prompt = reflectPrompt({
     cardId: card.id,
     title: card.title,
     repo: card.repo.name,
     outcome: describe(outcome),
     runLog: clip(runLog, MAX_LOG_CHARS),
-    reviewRules: clip(await fromTarget(card.repo, "REVIEW.md"), MAX_RULE_CHARS),
-    claudeRules: clip(await fromTarget(card.repo, "CLAUDE.md"), MAX_RULE_CHARS),
+    reviewRules: clip(review, MAX_RULE_CHARS),
+    claudeRules: clip(claude, MAX_RULE_CHARS),
     allowedTools: workerTools(cfg, card.repo),
     known: known.map((r) => `- [${r.status}] ${r.dedupeKey}: ${KIND_LABEL[r.kind]}: ${r.text}`),
+    signal,
+    overBudget,
   });
   const cwd = outcome.worktree && existsSync(outcome.worktree) ? outcome.worktree : card.repo.path;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -86,6 +101,6 @@ export async function reflect(
     timeoutMs: cfg.workerTimeoutMinutes * 60_000,
     traceFile: join(cfg.tracesDir, card.id, `${stamp}-reflector.jsonl`),
   });
-  if (!res.ok) return { proposals: [], dropped: [], error: `reflector failed: ${res.error}` };
-  return parseProposals(res.text, cfg.disallowedTools);
+  if (!res.ok) return { proposals: [], dropped: [], error: `reflector failed: ${res.error}`, ruleCounts };
+  return { ...parseProposals(res.text, cfg.disallowedTools), ruleCounts };
 }

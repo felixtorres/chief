@@ -17,6 +17,15 @@ export interface RunRecord {
   blast?: Blast;
   reason?: string;
   summary?: string;
+  /** The commit Chief pushed for the PR (to diff against what was merged). */
+  pushedHead?: string;
+  /** Branch the PR targets. */
+  target?: string;
+  mergeCommit?: string;
+  servedAt?: string;
+  /** Did you change the PR before merging? false = merged as Chief pushed it. */
+  corrected?: boolean;
+  revertedAt?: string;
   startedAt: string;
   updatedAt: string;
 }
