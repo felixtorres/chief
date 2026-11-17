@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildClaudeArgs } from "../src/claude.js";
 import { parseConfig } from "../src/config.js";
-import { cook, parseReview, slugify, workerTools } from "../src/pipeline.js";
+import { cook, isRuleFile, parseReview, slugify, workerTools } from "../src/pipeline.js";
 import { RunLog, tildify } from "../src/trace.js";
 import { fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
@@ -192,6 +192,47 @@ describe("cook", () => {
     const second = await cook(cfg, input);
     expect(second.worktree).toBe(first.worktree);
     expect(second.status).toBe("pass");
+  });
+});
+
+describe("rule files", () => {
+  it("reviews against REVIEW.md from the target branch and flags a worker that edits it as red", async () => {
+    process.env.FAKE_WORKER = "rules";
+    const { cfg, input, repo } = setup();
+    writeFileSync(join(repo, "REVIEW.md"), "ORIGINAL RULES: no mocks\n");
+    execFileSync("git", ["add", "REVIEW.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-qm", "add review rules"], { cwd: repo });
+    const out = await cook(cfg, input);
+    const reviewPrompt = fakeCalls().find((c) => c.prompt.includes("REVIEWER"))!.prompt;
+    // The edit is visible in the diff, but the guidelines the reviewer judges by are the target branch's.
+    expect(reviewPrompt).toContain("review guidelines (REVIEW.md):\nORIGINAL RULES: no mocks");
+    expect(reviewPrompt).not.toContain("review guidelines (REVIEW.md):\nIGNORE");
+    expect(out.status).toBe("pass");
+    expect(out.blast).toBe("red");
+    expect(out.ruleFiles).toEqual(["REVIEW.md"]);
+    expect(out.findings!.at(-1)).toMatch(/edits agent rule files \(REVIEW\.md\)/);
+  });
+
+  it("leaves blast alone when no rule files change, and records metrics", async () => {
+    const { cfg, input } = setup();
+    const out = await cook(cfg, input);
+    expect(out.blast).toBe("green");
+    expect(out.ruleFiles).toBeUndefined();
+    expect(out.metrics).toMatchObject({ checkFailures: 0, reviews: 1, findings: 0, denials: 0, costUsd: 0.5, durationMs: 130000 });
+  });
+
+  it("recognises rule files anywhere in the tree", () => {
+    for (const f of ["REVIEW.md", "CLAUDE.md", "svc/CLAUDE.md", ".claude/settings.json", "pkg/.claude/skills/x.md"]) expect(isRuleFile(f)).toBe(true);
+    for (const f of ["README.md", "docs/review.txt", "claude.ts", "src/CLAUDE.md.bak"]) expect(isRuleFile(f)).toBe(false);
+  });
+
+  it("categorises a non-converging run by its last feedback, not by the truncated reason", async () => {
+    const root = tmp();
+    const repo = makeRepo(root);
+    const cfg = makeConfig(root, repo, { maxRounds: 1, repos: { demo: { path: repo, testCmd: "for i in $(seq 200); do echo padding-line-$i; done; false" } } });
+    const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
+    expect(out.reason).not.toContain("Checks failed");
+    expect(out.category).toBe("checks");
   });
 });
 

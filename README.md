@@ -86,7 +86,7 @@ tail -f ~/Library/Logs/chief/chief.log
 
 Each repo can also set `"ado": { "org", "project" }` when it lives in a different Azure DevOps org or project than the top-level `ado`.
 
-Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
+Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
 
 ## The board
 
@@ -137,7 +137,7 @@ Cooking the same card again adds a new attempt at the top and keeps the earlier 
 - Workers run with `--permission-mode dontAsk` and an explicit allowlist. `git push`, `git remote`, `az`, `curl`, `wget`, WebFetch and WebSearch are always denied. Only Chief pushes.
 - Chief's allowlist is the only thing that grants permissions. Workers and the reviewer run with `--setting-sources ""` and `--strict-mcp-config`, so the allow rules you approved interactively (for example `Bash(pnpm *)` in a repo's `.claude/settings.local.json`), your hooks, plugins and MCP servers don't apply. Managed (org) settings still do. Put the extra commands a repo needs in its `allowedTools`; the worker's brief lists them.
 - The allowlist limits which commands run, not what they do: an allowed test command that installs dependencies (`uv run`, `npm test` with a pre-step) can still reach the network.
-- The reviewer gets read-only tools.
+- The reviewer gets read-only tools, and reads `REVIEW.md` from the target branch, never from the worker's worktree. A change that touches `REVIEW.md`, `CLAUDE.md` or `.claude/` anywhere is marked 🔴 with a note, so a worker can't rewrite the rules it's judged by without you seeing it.
 - PRs are always drafts. There is no merge code path, so use ADO branch policies to require your approval.
 - Everything (board, state, worktrees, logs) stays on the work machine.
 - When the worker needs a command it isn't allowed, that shows up on the Blocked card. Add it to the repo's `allowedTools` only if you're happy for it to run unattended.
@@ -146,6 +146,7 @@ Cooking the same card again adds a new attempt at the top and keeps the earlier 
 
 ```bash
 chief status                      # lane counts + recent runs
+chief stats [--repo api] [--weeks 4]  # first-pass rate, mean rounds, why cards got blocked, cost
 chief run                         # cook the next Ready card now (no need to wait for the poll)
 scripts/launchd.sh restart        # after editing config or pulling an update (run npm run build first)
 scripts/launchd.sh uninstall

@@ -36,6 +36,7 @@ export function makeConfig(root: string, repo: string, overrides: Record<string,
   return parseConfig({
     boardPath: join(root, "board.md"),
     stateFile: join(root, "state", "state.json"),
+    ledgerFile: join(root, "state", "ledger.jsonl"),
     worktreesDir: join(root, "worktrees"),
     digestDir: join(root, "digests"),
     runsDir: join(root, "runs"),

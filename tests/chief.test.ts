@@ -7,6 +7,7 @@ import { Chief } from "../src/chief.js";
 import { parseConfig } from "../src/config.js";
 import type { Note } from "../src/notify.js";
 import { appendDigest } from "../src/notify.js";
+import { readLedger } from "../src/ledger.js";
 import { StateStore } from "../src/state.js";
 import { makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
@@ -49,6 +50,17 @@ describe("Chief.tick", () => {
     const run = state.get(card.id!)!;
     expect(run).toMatchObject({ status: "pass", repo: "demo", rounds: 1, blast: "green" });
     expect(notes[0]!.title).toBe("Ready at the pass: Add feature file");
+
+    const ledger = readLedger(cfg.ledgerFile);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({ kind: "run", id: card.id, repo: "demo", status: "pass", rounds: 1, blast: "green", costUsd: 0.5 });
+  });
+
+  it("records blocked attempts in the ledger with a category", async () => {
+    process.env.FAKE_WORKER = "blocked";
+    const { cfg, chief } = setup({ Ready: ["Ambiguous thing"] });
+    await chief.tick();
+    expect(readLedger(cfg.ledgerFile)[0]).toMatchObject({ status: "blocked", category: "question" });
   });
 
   it("never touches Backlog cards on its own", async () => {

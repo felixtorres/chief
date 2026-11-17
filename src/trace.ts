@@ -114,6 +114,16 @@ export function summarizeTranscript(text: string): CallSummary {
 
 export type Role = "worker" | "reviewer";
 
+/** Numbers from one attempt, for the ledger and `chief stats`. */
+export interface RunMetrics {
+  checkFailures: number;
+  reviews: number;
+  findings: number;
+  denials: number;
+  costUsd?: number;
+  durationMs?: number;
+}
+
 export type Entry =
   | { kind: "agent"; role: Role; round: number; trace: string; summary: CallSummary; denials: string[]; error?: string }
   | { kind: "checks"; round: number; ok: boolean; report: string }
@@ -198,6 +208,22 @@ export class RunLog {
     const summary = summarizeTranscript(text);
     this.add({ kind: "agent", role, round, trace, summary, denials, error });
     return summary;
+  }
+
+  metrics(): RunMetrics {
+    const m: RunMetrics = { checkFailures: 0, reviews: 0, findings: 0, denials: 0 };
+    for (const e of this.entries) {
+      if (e.kind === "checks" && !e.ok) m.checkFailures++;
+      else if (e.kind === "review") {
+        m.reviews++;
+        m.findings += e.findings.length;
+      } else if (e.kind === "agent") {
+        m.denials += e.denials.length;
+        if (e.summary.costUsd !== undefined) m.costUsd = (m.costUsd ?? 0) + e.summary.costUsd;
+        if (e.summary.durationMs !== undefined) m.durationMs = (m.durationMs ?? 0) + e.summary.durationMs;
+      }
+    }
+    return m;
   }
 
   write(): void {

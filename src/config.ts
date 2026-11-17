@@ -37,6 +37,8 @@ export interface Config {
   runsDir: string;
   /** Raw stream-json transcripts of every worker/reviewer call. */
   tracesDir: string;
+  /** One JSON line per finished attempt and PR outcome; `chief stats` reads it. */
+  ledgerFile: string;
   /**
    * Which of your own Claude Code settings files workers load ("user,project,local" are the
    * options). Default "" loads none, so allow rules you approved interactively never leak in.
@@ -205,6 +207,7 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
       baseDir,
     ),
     tracesDir: expandHome(str(r.tracesDir, "tracesDir", join(stateDir, "traces")), baseDir),
+    ledgerFile: expandHome(str(r.ledgerFile, "ledgerFile", join(stateDir, "ledger.jsonl")), baseDir),
     settingSources: r.settingSources === undefined ? "" : strAllowEmpty(r.settingSources, "settingSources"),
     strictMcpConfig: bool(r.strictMcpConfig, "strictMcpConfig", true),
     pollSeconds: num(r.pollSeconds, "pollSeconds", 300),

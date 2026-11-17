@@ -9,6 +9,7 @@ import { readBoard } from "./board.js";
 import { Chief } from "./chief.js";
 import { callClaude } from "./claude.js";
 import { ConfigError, DEFAULT_CONFIG_PATH, expandHome, loadConfig, type Config } from "./config.js";
+import { computeStats, formatStats, readLedger } from "./ledger.js";
 import { notify } from "./notify.js";
 import { git, killAll, run } from "./run.js";
 import { StateStore } from "./state.js";
@@ -23,6 +24,7 @@ Usage:
   chief run [--card <id|title text>]          cook one card now (first Ready card by default)
   chief daemon                                watch the board forever (what launchd runs)
   chief status                                board lanes + recent runs
+  chief stats [--repo <name>] [--weeks <n>]   pass rate, rounds, blocked reasons (default 4 weeks)
 
 Options:
   --config <path>   config file (default: ${DEFAULT_CONFIG_PATH}, or $CHIEF_CONFIG)`;
@@ -155,6 +157,28 @@ function status(cfg: Config): void {
   }
 }
 
+function stats(cfg: Config, repo: string | undefined, weeksArg: string | undefined): number {
+  const weeks = weeksArg === undefined ? 4 : Number(weeksArg);
+  if (!Number.isFinite(weeks) || weeks <= 0) {
+    console.error("--weeks must be a positive number");
+    return 1;
+  }
+  if (repo && !cfg.repos[repo]) {
+    console.error(`unknown repo "${repo}" (configured: ${Object.keys(cfg.repos).join(", ")})`);
+    return 1;
+  }
+  const since = new Date(Date.now() - weeks * 7 * 24 * 3600_000);
+  const events = readLedger(cfg.ledgerFile);
+  console.log(formatStats(computeStats(events, { repo, since }), weeks));
+  if (!repo && Object.keys(cfg.repos).length > 1) {
+    for (const name of Object.keys(cfg.repos)) {
+      const s = computeStats(events, { repo: name, since });
+      if (s.attempts) console.log(`\n${formatStats(s, weeks)}`);
+    }
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -162,6 +186,8 @@ async function main(): Promise<number> {
       config: { type: "string" },
       board: { type: "string" },
       card: { type: "string" },
+      repo: { type: "string" },
+      weeks: { type: "string" },
       smoke: { type: "boolean", default: false },
       notify: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -179,6 +205,8 @@ async function main(): Promise<number> {
     case "status":
       status(cfgOrExit(configPath));
       return 0;
+    case "stats":
+      return stats(cfgOrExit(configPath), values.repo, values.weeks);
     case "run": {
       const cfg = cfgOrExit(configPath);
       const chief = new Chief(cfg, new StateStore(cfg.stateFile));

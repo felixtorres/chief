@@ -1,12 +1,13 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { createDraftPr, pushBranch } from "./ado.js";
+import { categorize, type BlockCategory } from "./ledger.js";
 import { callClaude } from "./claude.js";
 import type { Config, RepoConfig } from "./config.js";
 import { fixPrompt, reviewPrompt, workerPrompt, type Brief } from "./prompts.js";
 import { git, sh, tail } from "./run.js";
 import type { Blast } from "./state.js";
-import { RunLog } from "./trace.js";
+import { RunLog, type RunMetrics } from "./trace.js";
 
 export type Log = (msg: string) => void;
 
@@ -37,6 +38,11 @@ export interface Outcome {
   worktree: string;
   /** Path of the Markdown run log for this attempt. */
   runLog?: string;
+  metrics?: RunMetrics;
+  /** Why it ended Blocked, for the ledger. */
+  category?: BlockCategory;
+  /** Rule files (REVIEW.md, CLAUDE.md, .claude/) the worker's diff touches. */
+  ruleFiles?: string[];
 }
 
 export interface Review {
@@ -44,9 +50,15 @@ export interface Review {
   blast: Blast;
   findings: string[];
   error?: string;
+  ruleFiles?: string[];
 }
 
 const MAX_DIFF_CHARS = 80_000;
+
+/** Files that tell agents how to work or how to judge work. A worker must not grade itself. */
+export function isRuleFile(path: string): boolean {
+  return /(^|\/)(REVIEW|CLAUDE)\.md$/i.test(path) || /(^|\/)\.claude\//.test(path);
+}
 
 export function slugify(text: string): string {
   return text
@@ -165,8 +177,10 @@ async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promi
 async function review(cfg: Config, input: CookInput, worktree: string, base: string, runLog: RunLog, round: number): Promise<Review> {
   let diff = await mustGit(["diff", base, "HEAD"], worktree);
   if (diff.length > MAX_DIFF_CHARS) diff = diff.slice(0, MAX_DIFF_CHARS) + "\n… (diff truncated; read the files directly)";
-  const reviewPath = join(worktree, "REVIEW.md");
-  const reviewMd = existsSync(reviewPath) ? readFileSync(reviewPath, "utf8") : undefined;
+  // Read the rules from the target branch, not the worktree: the worker can edit its own checkout.
+  const shown = await git(["show", `${base}:REVIEW.md`], worktree);
+  const reviewMd = shown.code === 0 ? shown.stdout : undefined;
+  const ruleFiles = (await mustGit(["diff", "--name-only", base, "HEAD"], worktree)).split("\n").filter((f) => f && isRuleFile(f));
   const res = await callClaude(cfg, {
     cwd: worktree,
     prompt: reviewPrompt(input.title, diff, reviewMd),
@@ -180,6 +194,11 @@ async function review(cfg: Config, input: CookInput, worktree: string, base: str
   const rev: Review = res.ok
     ? parseReview(res.text)
     : { verdict: "error", blast: "yellow", findings: [], error: `reviewer failed: ${res.error}` };
+  if (ruleFiles.length && rev.verdict !== "error") {
+    rev.blast = "red";
+    rev.ruleFiles = ruleFiles;
+    rev.findings.push(`Chief: this change edits agent rule files (${ruleFiles.join(", ")}); a human must review those lines`);
+  }
   runLog.add({ kind: "review", round, verdict: rev.error ? `error: ${rev.error}` : rev.verdict, blast: rev.blast, findings: rev.findings });
   return rev;
 }
@@ -213,9 +232,9 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
   const brief: Brief = { title: input.title, notes: input.notes, repo: input.repo };
   const runLog = new RunLog(cfg, { id: input.id, title: input.title, repo: input.repo.name }, branch);
   runLog.write();
-  const blocked = (reason: string, rounds: number, summary = ""): Outcome => {
+  const blocked = (reason: string, rounds: number, summary = "", category = categorize(reason)): Outcome => {
     runLog.add({ kind: "outcome", status: "blocked", text: `Blocked after round ${rounds}: ${reason}` });
-    return { status: "blocked", reason, summary, rounds, branch, worktree, runLog: runLog.path };
+    return { status: "blocked", reason, summary, rounds, branch, worktree, runLog: runLog.path, metrics: runLog.metrics(), category };
   };
 
   try {
@@ -228,6 +247,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
   async function runRounds(): Promise<Outcome> {
     let sessionId: string | undefined;
     let feedback: string | undefined;
+    let feedbackKind: BlockCategory = "other";
     let summary = "";
     let checks = "";
     let approved: Review | undefined;
@@ -271,10 +291,12 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
       const commitError = await commitLeftovers(worktree, input.title);
       if (commitError) {
         runLog.add({ kind: "note", round: rounds, text: `Chief's fallback commit was rejected by the repo's commit hooks; sent back to the worker. ${commitError}` });
+        feedbackKind = "commit";
         feedback = `Your changes are not committed: Chief's fallback commit was rejected by this repo's commit hooks:\n${commitError}\n\nCommit them yourself (git add, git commit) with a message in this repo's convention, then finish.`;
         continue;
       }
       if ((await commitCount(worktree, base)) === 0) {
+        feedbackKind = "commit";
         feedback = "No changes were committed. Implement the card, then git add and git commit.";
         runLog.add({ kind: "note", round: rounds, text: "The worker committed nothing; asked again." });
         continue;
@@ -285,6 +307,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
       checks = result.report;
       runLog.add({ kind: "checks", round: rounds, ok: result.ok, report: result.report });
       if (!result.ok) {
+        feedbackKind = "checks";
         feedback = `Checks failed:\n${result.report}`;
         continue;
       }
@@ -296,16 +319,18 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
         approved = rev;
         break;
       }
+      feedbackKind = "review";
       feedback = `Reviewer requested changes:\n${rev.findings.map((f) => `- ${f}`).join("\n") || "- (no specifics given)"}`;
     }
 
     if (!approved) {
       const last = Math.min(rounds, cfg.maxRounds);
-      return blocked(`did not converge after ${cfg.maxRounds} rounds; last feedback: ${tail(feedback ?? "", 400)}`, last, summary);
+      return blocked(`did not converge after ${cfg.maxRounds} rounds; last feedback: ${tail(feedback ?? "", 400)}`, last, summary, feedbackKind);
     }
 
     const outcome: Outcome = {
       status: "pass", summary, blast: approved.blast, findings: approved.findings, rounds, branch, worktree, runLog: runLog.path,
+      metrics: runLog.metrics(), ruleFiles: approved.ruleFiles,
     };
     if (!cfg.openPr) {
       runLog.add({ kind: "outcome", status: "pass", text: `Approved in ${rounds} round(s); work is on branch \`${branch}\` (openPr is off).` });

@@ -1,5 +1,6 @@
 import { prStatus } from "./ado.js";
 import { type Card, updateBoard } from "./board.js";
+import { appendLedger, categorize } from "./ledger.js";
 import type { Config, RepoConfig } from "./config.js";
 import { notify, type Note } from "./notify.js";
 import { cook, removeWorktree, type Log, type Outcome } from "./pipeline.js";
@@ -63,6 +64,9 @@ export class Chief {
     for (const run of stale) {
       const reason = "interrupted: Chief restarted mid-run (worktree kept)";
       this.state.upsert({ id: run.id, status: "blocked", reason });
+      appendLedger(this.cfg.ledgerFile, {
+        kind: "run", at: new Date().toISOString(), id: run.id, repo: run.repo, status: "blocked", rounds: run.rounds, category: "interrupted",
+      });
       this.moveCard(run.id, this.cfg.lanes.blocked, `🚧 ${reason}`);
     }
     if (stale.length) this.log(`recovered ${stale.length} interrupted card(s) → Blocked`);
@@ -143,6 +147,18 @@ export class Chief {
     } catch (err) {
       outcome = { status: "blocked", reason: `Chief error: ${(err as Error).message}`, summary: "", rounds: 0, branch: "", worktree: "" };
     }
+    appendLedger(this.cfg.ledgerFile, {
+      kind: "run",
+      at: new Date().toISOString(),
+      id: c.id,
+      repo: c.repo.name,
+      status: outcome.status,
+      rounds: outcome.rounds,
+      blast: outcome.blast,
+      category: outcome.status === "blocked" ? (outcome.category ?? categorize(outcome.reason)) : undefined,
+      ruleFiles: outcome.ruleFiles?.length ? outcome.ruleFiles : undefined,
+      ...outcome.metrics,
+    });
 
     this.state.upsert({
       id: c.id,
@@ -184,11 +200,13 @@ export class Chief {
       const status = await prStatus(this.cfg, repo, run.prId);
       if (status === "completed") {
         this.state.upsert({ id: run.id, status: "served" });
+        appendLedger(this.cfg.ledgerFile, { kind: "served", at: new Date().toISOString(), id: run.id, repo: run.repo });
         this.moveCard(run.id, this.cfg.lanes.served, `✅ merged · [PR !${run.prId}](${run.prUrl})`);
         this.log(`[${run.id}] served (PR !${run.prId} completed)`);
         await this.cleanUp(run.id);
       } else if (status === "abandoned") {
         this.state.upsert({ id: run.id, status: "blocked", reason: "PR abandoned" });
+        appendLedger(this.cfg.ledgerFile, { kind: "abandoned", at: new Date().toISOString(), id: run.id, repo: run.repo });
         this.moveCard(run.id, this.cfg.lanes.blocked, `🚧 PR !${run.prId} was abandoned`);
       }
     }
