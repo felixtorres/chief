@@ -75,4 +75,5 @@ export function resetFakeEnv(): void {
   delete process.env.FAKE_DENY;
   delete process.env.FAKE_REFLECT;
   delete process.env.FAKE_AZ_PR;
+  delete process.env.FAKE_SECOND_RESULT;
 }

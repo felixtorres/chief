@@ -103,10 +103,13 @@ export function summarizeTranscript(text: string): CallSummary {
         }
       }
     } else if (ev.type === "result") {
+      // A session that started background commands answers more than once: add up time
+      // and turns; the cost is cumulative, so keep the largest.
       summary.sessionId ??= ev.session_id as string | undefined;
-      summary.costUsd = ev.total_cost_usd as number | undefined;
-      summary.durationMs = ev.duration_ms as number | undefined;
-      summary.numTurns = ev.num_turns as number | undefined;
+      const add = (prev: number | undefined, v: unknown) => (typeof v === "number" ? (prev ?? 0) + v : prev);
+      summary.durationMs = add(summary.durationMs, ev.duration_ms);
+      summary.numTurns = add(summary.numTurns, ev.num_turns);
+      if (typeof ev.total_cost_usd === "number") summary.costUsd = Math.max(summary.costUsd ?? 0, ev.total_cost_usd);
     }
   }
   return summary;

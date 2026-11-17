@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Stand-in for `claude -p` in tests. Behaviour is driven by env vars:
 //   FAKE_STATE   dir for counters + a calls.jsonl log of argv/cwd/prompt
-//   FAKE_WORKER  "edit" (default) | "blocked" | "nochange" | "fail" | "conventional" | "rules"
+//   FAKE_WORKER  "edit" (default) | "blocked" | "nochange" | "fail" | "conventional" | "rules" | "editonce" (edits only on the first prompt, not on fix rounds)
+//   FAKE_SECOND_RESULT  emit a second result event with this text (as after a background command)
 //                ("rules" also rewrites REVIEW.md in its worktree)
 //                ("conventional" commits as feat(demo): ... once told a hook rejected Chief's commit)
 //   FAKE_DENY    a shell command to report as permission-denied
@@ -42,7 +43,10 @@ function out(result, isError = false) {
     ? [{ tool_name: "Bash", tool_use_id: "t1", tool_input: { command: process.env.FAKE_DENY } }]
     : [];
   const res = { type: "result", result, is_error: isError, session_id: "fake-session", total_cost_usd: 0.25, duration_ms: 65000, num_turns: 3, permission_denials };
-  if (stream) process.stdout.write([...events, res].map((e) => JSON.stringify(e)).join("\n") + "\n");
+  const extra = process.env.FAKE_SECOND_RESULT
+    ? [{ ...res, result: process.env.FAKE_SECOND_RESULT, duration_ms: 2000, num_turns: 1, total_cost_usd: 0.3 }]
+    : [];
+  if (stream) process.stdout.write([...events, res, ...extra].map((e) => JSON.stringify(e)).join("\n") + "\n");
   else process.stdout.write(JSON.stringify(res));
   process.exit(isError ? 1 : 0);
 }
@@ -64,7 +68,7 @@ const mode = process.env.FAKE_WORKER ?? "edit";
 if (mode === "fail") out("boom", true);
 if (mode === "blocked") out("BLOCKED: which environment should this target?\nmore detail");
 tool("Read", { file_path: join(process.cwd(), "README.md") });
-if (mode !== "nochange") {
+if (mode !== "nochange" && !(mode === "editonce" && prompt.includes("sent your dish back"))) {
   const n = counter("edits");
   appendFileSync(join(process.cwd(), "feature.txt"), `edit ${n}\n`);
   tool("Write", { file_path: join(process.cwd(), "feature.txt") });

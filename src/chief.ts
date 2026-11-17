@@ -184,12 +184,14 @@ export class Chief {
         ],
       };
     }
+    const prev = this.state.get(c.id);
+    const previous = prev?.status === "blocked" ? { reason: prev.reason, approved: prev.approved } : undefined;
     this.state.upsert({ id: c.id, title: c.title, repo: repo.name, status: "cooking", rounds: 0, reason: undefined });
     this.log(`[${c.id}] cooking "${c.title}" in ${repo.name}`);
 
     let outcome: Outcome;
     try {
-      outcome = await cook(this.cfg, { id: c.id, title: c.title, notes: c.notes, repo, base: c.base }, this.log);
+      outcome = await cook(this.cfg, { id: c.id, title: c.title, notes: c.notes, repo, base: c.base, previous }, this.log);
     } catch (err) {
       outcome = { status: "blocked", reason: `Chief error: ${(err as Error).message}`, summary: "", rounds: 0, branch: "", worktree: "" };
     }
@@ -218,6 +220,7 @@ export class Chief {
       reason: outcome.reason,
       summary: outcome.summary,
       pushedHead: outcome.pushedHead,
+      approved: outcome.approved,
       target: c.base ?? repo.defaultBranch,
     });
 

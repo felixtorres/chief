@@ -7,7 +7,7 @@ import type { Config, RepoConfig } from "./config.js";
 import { fixPrompt, reviewPrompt, workerPrompt, type Brief } from "./prompts.js";
 import { addRuleLine, learnedTools } from "./recipes.js";
 import { git, sh, tail } from "./run.js";
-import type { Blast } from "./state.js";
+import type { ApprovedWork, Blast } from "./state.js";
 import { RunLog, type RunMetrics } from "./trace.js";
 
 export type Log = (msg: string) => void;
@@ -19,6 +19,8 @@ export interface CookInput {
   repo: RepoConfig;
   /** Branch to start from and open the PR against; defaults to repo.defaultBranch. */
   base?: string;
+  /** The last attempt of this card, when it ended Blocked. */
+  previous?: { reason?: string; approved?: ApprovedWork };
 }
 
 /** The branch a card starts from and its PR targets. */
@@ -46,6 +48,8 @@ export interface Outcome {
   ruleFiles?: string[];
   /** The commit Chief pushed for the PR. */
   pushedHead?: string;
+  /** Approved work whose PR step failed; the next attempt skips straight to the PR. */
+  approved?: ApprovedWork;
 }
 
 export interface Review {
@@ -164,18 +168,37 @@ async function commitCount(worktree: string, base: string): Promise<number> {
   return Number(await mustGit(["rev-list", "--count", `${base}..HEAD`], worktree));
 }
 
-async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promise<{ ok: boolean; report: string }> {
+async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promise<{ ok: boolean; report: string; failed: string[] }> {
   const lines: string[] = [];
-  let ok = true;
+  const failed: string[] = [];
   for (const [name, cmd] of [["test", repo.testCmd], ["lint", repo.lintCmd]] as const) {
     if (!cmd) continue;
     const r = await sh(cmd, worktree, cfg.checkTimeoutMinutes * 60_000);
     const passed = r.code === 0 && !r.timedOut;
-    ok &&= passed;
+    if (!passed) failed.push(cmd);
     lines.push(`${passed ? "✓" : "✗"} ${name}: \`${cmd}\`${r.timedOut ? " (timed out)" : ` (exit ${r.code})`}`);
     if (!passed) lines.push("```", tail(`${r.stdout}\n${r.stderr}`.trim(), 3000), "```");
   }
-  return { ok, report: lines.join("\n") || "no checks configured" };
+  return { ok: failed.length === 0, report: lines.join("\n") || "no checks configured", failed };
+}
+
+/**
+ * Run the failing checks on the base commit, in the same worktree (same deps and caches).
+ * Returns the commands that fail there too; those failures are not the card's, so no fix
+ * round can repair them. Returns [] if they pass on base or the base can't be checked out.
+ */
+async function failingOnBase(cfg: Config, worktree: string, base: string, branch: string, cmds: string[]): Promise<string[]> {
+  if ((await git(["checkout", "--quiet", "--detach", base], worktree)).code !== 0) return [];
+  const failing: string[] = [];
+  try {
+    for (const cmd of cmds) {
+      const r = await sh(cmd, worktree, cfg.checkTimeoutMinutes * 60_000);
+      if (r.code !== 0 || r.timedOut) failing.push(cmd);
+    }
+  } finally {
+    await mustGit(["checkout", "--quiet", branch], worktree);
+  }
+  return failing;
 }
 
 async function review(cfg: Config, input: CookInput, worktree: string, base: string, runLog: RunLog, round: number): Promise<Review> {
@@ -233,7 +256,14 @@ function prDescription(input: CookInput, summary: string, checks: string, rev: R
 /** Brief → worker → proof → review loop (max rounds) → draft PR. Never merges. */
 export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): Promise<Outcome> {
   const { branch, worktree, base } = await prepareWorktree(cfg, input);
-  const brief: Brief = { title: input.title, notes: input.notes, repo: input.repo };
+  const head = await mustGit(["rev-parse", "HEAD"], worktree);
+  const commits = (await mustGit(["log", "--oneline", "-n", "10", `${base}..HEAD`], worktree)).split("\n").filter(Boolean);
+  const brief: Brief = {
+    title: input.title,
+    notes: input.notes,
+    repo: input.repo,
+    previous: input.previous?.reason || commits.length ? { reason: input.previous?.reason, commits } : undefined,
+  };
   const runLog = new RunLog(cfg, { id: input.id, title: input.title, repo: input.repo.name }, branch);
   runLog.write();
   const blocked = (reason: string, rounds: number, summary = "", category = categorize(reason)): Outcome => {
@@ -256,6 +286,16 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     let checks = "";
     let approved: Review | undefined;
     let rounds = 0;
+    let lastFailedHead: string | undefined;
+    let checkedBase = false;
+
+    // Last time this exact commit passed checks and review, and only the PR step failed.
+    const prior = input.previous?.approved;
+    if (prior && prior.head === head && cfg.openPr) {
+      log(`[${input.id}] ${head.slice(0, 8)} was already approved; retrying only the PR step`);
+      runLog.add({ kind: "note", round: prior.rounds, text: `Commit ${head.slice(0, 8)} already passed Chief's checks and the review on the last attempt; only the PR step failed, so this attempt skips straight to the PR.` });
+      return openPr(prior.summary, prior.checks, { verdict: "approve", blast: prior.blast, findings: prior.findings }, prior.rounds);
+    }
 
     for (rounds = 1; rounds <= cfg.maxRounds; rounds++) {
       log(`[${input.id}] round ${rounds}: worker`);
@@ -306,11 +346,31 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
         continue;
       }
 
+      const headNow = await mustGit(["rev-parse", "HEAD"], worktree);
+      if (feedbackKind === "checks" && headNow === lastFailedHead) {
+        runLog.add({ kind: "note", round: rounds, text: "The worker made no new commits after the checks failed, so running them again would fail the same way." });
+        return blocked(`checks fail and the worker made no new commits to fix them; last feedback: ${tail(feedback ?? "", 400)}`, rounds, summary, "checks");
+      }
+
       log(`[${input.id}] round ${rounds}: checks`);
       const result = await runChecks(cfg, input.repo, worktree);
       checks = result.report;
       runLog.add({ kind: "checks", round: rounds, ok: result.ok, report: result.report });
       if (!result.ok) {
+        lastFailedHead = headNow;
+        if (!checkedBase) {
+          checkedBase = true;
+          log(`[${input.id}] checks failed; running them on ${targetBranch(input)} to see if the card caused it`);
+          const onBase = await failingOnBase(cfg, worktree, base, branch, result.failed);
+          if (onBase.length) {
+            const which = onBase.map((c) => `\`${c}\``).join(" and ");
+            runLog.add({ kind: "note", round: rounds, text: `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes.` });
+            return blocked(
+              `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes, so no fix round can repair them. Fix the check or the repo setup, then move the card back to Ready. ${tail(result.report, 300)}`,
+              rounds, summary, "environment",
+            );
+          }
+        }
         feedbackKind = "checks";
         feedback = `Checks failed:\n${result.report}`;
         continue;
@@ -341,15 +401,25 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
       return outcome;
     }
 
+    return openPr(summary, checks, approved, rounds);
+  }
+
+  async function openPr(summary: string, checks: string, approved: Review, rounds: number): Promise<Outcome> {
     log(`[${input.id}] opening draft PR`);
+    const approvedHead = await mustGit(["rev-parse", "HEAD"], worktree);
     try {
       await pushBranch(worktree, branch);
-      const pushedHead = await mustGit(["rev-parse", "HEAD"], worktree);
       const pr = await createDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
       runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${rounds} round(s).` });
-      return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead };
+      return {
+        status: "pass", summary, blast: approved.blast, findings: approved.findings, rounds, branch, worktree, runLog: runLog.path,
+        metrics: runLog.metrics(), ruleFiles: approved.ruleFiles, prId: pr.id, prUrl: pr.url, pushedHead: approvedHead,
+      };
     } catch (err) {
-      return blocked(`work is ready on branch ${branch} but the PR step failed: ${(err as Error).message}`, rounds, summary);
+      return {
+        ...blocked(`work is ready on branch ${branch} but the PR step failed: ${(err as Error).message}`, rounds, summary),
+        approved: { head: approvedHead, summary, checks, blast: approved.blast, findings: approved.findings, rounds },
+      };
     }
   }
 }

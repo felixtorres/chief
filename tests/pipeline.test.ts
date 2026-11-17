@@ -64,7 +64,7 @@ describe("cook", () => {
   it("feeds failing checks back to the worker and blocks if they never pass", async () => {
     const root = tmp();
     const repo = makeRepo(root);
-    const cfg = makeConfig(root, repo, { maxRounds: 2, repos: { demo: { path: repo, testCmd: "echo nope >&2; false" } } });
+    const cfg = makeConfig(root, repo, { maxRounds: 2, repos: { demo: { path: repo, testCmd: "test ! -f feature.txt || { echo nope >&2; false; }" } } });
     const input = { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! };
     const out = await cook(cfg, input);
     expect(out.status).toBe("blocked");
@@ -229,10 +229,84 @@ describe("rule files", () => {
   it("categorises a non-converging run by its last feedback, not by the truncated reason", async () => {
     const root = tmp();
     const repo = makeRepo(root);
-    const cfg = makeConfig(root, repo, { maxRounds: 1, repos: { demo: { path: repo, testCmd: "for i in $(seq 200); do echo padding-line-$i; done; false" } } });
+    const cfg = makeConfig(root, repo, { maxRounds: 1, repos: { demo: { path: repo, testCmd: "test ! -f feature.txt || { for i in $(seq 200); do echo padding-line-$i; done; false; }" } } });
     const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
     expect(out.reason).not.toContain("Checks failed");
     expect(out.category).toBe("checks");
+  });
+});
+
+describe("retries and fix rounds", () => {
+  it("blocks at once when the failing check also fails on the base branch", async () => {
+    const root = tmp();
+    const repo = makeRepo(root);
+    const cfg = makeConfig(root, repo, { maxRounds: 3, repos: { demo: { path: repo, testCmd: "echo broken-env >&2; false" } } });
+    const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
+    expect(out.status).toBe("blocked");
+    expect(out.category).toBe("environment");
+    expect(out.reason).toMatch(/also fail on .* without this card's changes/);
+    expect(fakeCalls()).toHaveLength(1); // no fix rounds spent on it
+    // The worktree is back on the card's branch afterwards.
+    const { git } = await import("../src/run.js");
+    expect((await git(["branch", "--show-current"], out.worktree)).stdout.trim()).toBe(out.branch);
+  });
+
+  it("stops when the worker makes no new commits after checks failed", async () => {
+    process.env.FAKE_WORKER = "editonce";
+    const root = tmp();
+    const repo = makeRepo(root);
+    const cfg = makeConfig(root, repo, { maxRounds: 3, repos: { demo: { path: repo, testCmd: "test ! -f feature.txt" } } });
+    const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
+    expect(out.status).toBe("blocked");
+    expect(out.reason).toMatch(/made no new commits/);
+    expect(out.category).toBe("checks");
+    expect(fakeCalls()).toHaveLength(2); // round 3 never runs
+  });
+
+  it("retries only the PR step when the approved commit is unchanged", async () => {
+    const { cfg, input } = setup({ openPr: true });
+    const first = await cook(cfg, input);
+    expect(first.reason).toMatch(/PR step failed/);
+    expect(first.approved?.head).toMatch(/^[0-9a-f]{40}$/);
+    const calls = fakeCalls().length;
+
+    const second = await cook(cfg, { ...input, previous: { reason: first.reason, approved: first.approved } });
+    expect(fakeCalls()).toHaveLength(calls); // no worker, no reviewer
+    expect(second.reason).toMatch(/PR step failed/);
+    expect(second.approved?.head).toBe(first.approved!.head);
+    expect(readFileSync(second.runLog!, "utf8")).toMatch(/skips straight to the PR/);
+  });
+
+  it("tells a retried worker why the last attempt stopped and what it already committed", async () => {
+    const { cfg, input } = setup();
+    await cook(cfg, input);
+    await cook(cfg, { ...input, previous: { reason: "BLOCKED: which DB?" } });
+    const prompt = fakeCalls().filter((c) => !c.prompt.includes("REVIEWER")).at(-1)!.prompt;
+    expect(prompt).toContain("PREVIOUS ATTEMPT");
+    expect(prompt).toContain("It stopped because: BLOCKED: which DB?");
+    expect(prompt).toMatch(/already has these commits[\s\S]*- [0-9a-f]{7,}/);
+  });
+
+  it("reads every result when the worker answered twice (background command)", async () => {
+    process.env.FAKE_SECOND_RESULT = "The background test run finished.";
+    const { cfg, input } = setup();
+    const out = await cook(cfg, input);
+    expect(out.summary).toContain("Changed feature.txt");
+    expect(out.summary).toContain("The background test run finished.");
+    const log = readFileSync(out.runLog!, "utf8");
+    expect(log).toMatch(/\*\*Worker\*\* · 1m 07s · 4 turns · \$0\.30/);
+  });
+});
+
+describe("mergeResults", () => {
+  it("prefers a BLOCKED answer, adds up time and turns, and keeps the cumulative cost", async () => {
+    const { mergeResults } = await import("../src/claude.js");
+    const m = mergeResults([
+      { type: "result", result: "BLOCKED: need a key", duration_ms: 1000, num_turns: 5, total_cost_usd: 0.1, permission_denials: [{ tool_name: "Bash" }] },
+      { type: "result", result: "background job done", duration_ms: 500, num_turns: 1, total_cost_usd: 0.12 },
+    ])!;
+    expect(m).toMatchObject({ result: "BLOCKED: need a key", duration_ms: 1500, num_turns: 6, total_cost_usd: 0.12 });
+    expect(m.permission_denials).toHaveLength(1);
   });
 });
 

@@ -65,17 +65,48 @@ export function buildClaudeArgs(cfg: Config, call: AgentCall): { bin: string; ar
   return { bin, args };
 }
 
-/** The final `result` event of a stream-json transcript (or a plain --output-format json object). */
-export function parseResult(stdout: string): ClaudeJson | undefined {
-  for (const line of stdout.trim().split("\n").reverse()) {
+/** Every `result` event of a stream-json transcript (or a plain --output-format json object), in order. */
+export function parseResults(stdout: string): ClaudeJson[] {
+  const out: ClaudeJson[] = [];
+  for (const line of stdout.trim().split("\n")) {
     try {
       const data = JSON.parse(line) as ClaudeJson;
-      if (data.type === "result" || data.type === undefined) return data;
+      if (data && typeof data === "object" && (data.type === "result" || data.type === undefined)) out.push(data);
     } catch {
-      // not JSON (a warning, a partial line); keep looking
+      // not JSON (a warning, a partial line); skip it
     }
   }
-  return undefined;
+  return out;
+}
+
+const isBlocked = (t: unknown): t is string => typeof t === "string" && /^\s*BLOCKED:/i.test(t);
+
+/**
+ * One session can emit several results: when the agent starts a background command, it
+ * answers, then wakes up again when the command finishes and answers once more. Merge
+ * them so nothing is lost: a BLOCKED answer anywhere wins, otherwise all answers are kept
+ * in order; time and turns add up; cost is already cumulative, so take the largest.
+ */
+export function mergeResults(results: ClaudeJson[]): ClaudeJson | undefined {
+  if (results.length <= 1) return results[0];
+  const last = results[results.length - 1]!;
+  const texts = results.map((r) => r.result).filter((t): t is string => typeof t === "string" && t.trim() !== "");
+  const sum = (k: "duration_ms" | "num_turns") =>
+    results.some((r) => typeof r[k] === "number") ? results.reduce((n, r) => n + (r[k] ?? 0), 0) : undefined;
+  const costs = results.map((r) => r.total_cost_usd).filter((c): c is number => typeof c === "number");
+  return {
+    ...last,
+    result: texts.find(isBlocked) ?? texts.join("\n\n"),
+    duration_ms: sum("duration_ms"),
+    num_turns: sum("num_turns"),
+    total_cost_usd: costs.length ? Math.max(...costs) : undefined,
+    permission_denials: results.flatMap((r) => r.permission_denials ?? []),
+  };
+}
+
+/** The (merged) result of a stream-json transcript. */
+export function parseResult(stdout: string): ClaudeJson | undefined {
+  return mergeResults(parseResults(stdout));
 }
 
 /** One headless Claude Code turn via `claude -p`, billed to whatever seat the CLI is logged into. */

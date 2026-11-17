@@ -4,6 +4,16 @@ import { dirname } from "node:path";
 export type RunStatus = "cooking" | "pass" | "blocked" | "served";
 export type Blast = "green" | "yellow" | "red";
 
+/** Work that passed checks and review but whose PR step failed, so a retry can go straight to the PR. */
+export interface ApprovedWork {
+  head: string;
+  summary: string;
+  checks: string;
+  blast: Blast;
+  findings: string[];
+  rounds: number;
+}
+
 export interface RunRecord {
   id: string;
   title: string;
@@ -17,6 +27,8 @@ export interface RunRecord {
   blast?: Blast;
   reason?: string;
   summary?: string;
+  /** Set when the last attempt was approved but blocked at the PR step. */
+  approved?: ApprovedWork;
   /** The commit Chief pushed for the PR (to diff against what was merged). */
   pushedHead?: string;
   /** Branch the PR targets. */

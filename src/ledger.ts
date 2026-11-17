@@ -4,7 +4,7 @@ import type { Blast } from "./state.js";
 import type { RunMetrics } from "./trace.js";
 
 /** Why an attempt ended Blocked, coarse enough to count. */
-export type BlockCategory = "question" | "checks" | "review" | "review-error" | "worker-error" | "commit" | "pr" | "chief-error" | "interrupted" | "other";
+export type BlockCategory = "question" | "checks" | "review" | "review-error" | "worker-error" | "commit" | "pr" | "chief-error" | "interrupted" | "environment" | "other";
 
 export type LedgerEvent =
   | ({
@@ -29,6 +29,7 @@ export function categorize(reason = ""): BlockCategory {
   if (/^Chief error/i.test(reason)) return "chief-error";
   if (/^worker failed/i.test(reason)) return "worker-error";
   if (/PR step failed/i.test(reason)) return "pr";
+  if (/without this card's changes/i.test(reason)) return "environment";
   if (/^(reviewer failed|unparseable review|review failed)/i.test(reason)) return "review-error";
   if (/did not converge/i.test(reason)) {
     if (/Checks failed/i.test(reason)) return "checks";

@@ -7,6 +7,20 @@ export interface Brief {
   title: string;
   notes: string[];
   repo: RepoConfig;
+  /** What the last attempt of this card left behind, so a retry doesn't start blind. */
+  previous?: { reason?: string; commits: string[] };
+}
+
+function previousSection(p: Brief["previous"]): string {
+  if (!p || (!p.reason && !p.commits.length)) return "";
+  const lines = ["", "PREVIOUS ATTEMPT (this card was tried before):"];
+  if (p.reason) lines.push(`- It stopped because: ${p.reason.replace(/\s+/g, " ").slice(0, 600)}`);
+  if (p.commits.length) {
+    lines.push("- Your branch already has these commits from it (newest first):", ...p.commits.map((c) => `  - ${c}`));
+    lines.push("- Start from them: check what is already done and finish the rest; don't redo it.");
+  }
+  lines.push("- If the reason above is still outside your control, reply BLOCKED: and say what a person must change.");
+  return lines.join("\n") + "\n";
 }
 
 function checksLine(repo: RepoConfig): string {
@@ -30,12 +44,12 @@ export function workerPrompt(brief: Brief, feedback?: string): string {
 CARD: ${brief.title}
 NOTES:
 ${notes}
-
+${previousSection(brief.previous)}
 Rules:
 1. Read the surrounding code first and follow the existing style and conventions (see CLAUDE.md if present).
 2. Write or identify an ACCEPTANCE TEST that fails before your change and passes after it.
 3. Make the smallest change that satisfies the card. No unrelated refactors, no new dependencies, no CI/deploy config changes.
-4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary.${extraCommands(brief.repo)}
+4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary. Run every command in the foreground and wait for it; never start background commands, because your session ends when you reply.${extraCommands(brief.repo)}
 5. Commit your work (git add, git commit) with a message in this repo's convention: match the style of \`git log\` and any commitlint or commit-msg hook, and if a hook rejects the message, fix it and commit again. Never push, open PRs, or change remotes.
 6. If the card is ambiguous, unsafe, or impossible, make no changes and reply with a first line of "BLOCKED: <your question>".
 
