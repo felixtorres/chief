@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { createDraftPr, pushBranch } from "./ado.js";
 import { categorize, type BlockCategory } from "./ledger.js";
 import { callClaude } from "./claude.js";
 import type { Config, RepoConfig } from "./config.js";
 import { fixPrompt, reviewPrompt, workerPrompt, type Brief } from "./prompts.js";
+import { addRuleLine, learnedTools } from "./recipes.js";
 import { git, sh, tail } from "./run.js";
 import type { Blast } from "./state.js";
 import { RunLog, type RunMetrics } from "./trace.js";
@@ -71,7 +72,8 @@ export function slugify(text: string): string {
 
 export function workerTools(cfg: Config, repo: RepoConfig): string[] {
   const checks = [repo.testCmd, repo.lintCmd].filter(Boolean).map((c) => `Bash(${c}:*)`);
-  return [...new Set([...cfg.allowedTools, ...repo.allowedTools, ...checks])];
+  const learned = learnedTools(cfg.learnedFile, repo.name, cfg.disallowedTools);
+  return [...new Set([...cfg.allowedTools, ...repo.allowedTools, ...checks, ...learned])];
 }
 
 export function parseReview(text: string): Review {
@@ -94,7 +96,7 @@ async function mustGit(args: string[], cwd: string): Promise<string> {
   return r.stdout.trim();
 }
 
-async function prepareWorktree(cfg: Config, input: CookInput): Promise<{ branch: string; worktree: string; base: string }> {
+export async function prepareWorktree(cfg: Config, input: Pick<CookInput, "id" | "title" | "repo" | "base">): Promise<{ branch: string; worktree: string; base: string }> {
   const { repo, id, title } = input;
   const branch = `chief/${id}-${slugify(title)}`;
   const worktree = join(cfg.worktreesDir, `${repo.name}-${id}`);
@@ -346,5 +348,60 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     } catch (err) {
       return blocked(`work is ready on branch ${branch} but the PR step failed: ${(err as Error).message}`, rounds, summary);
     }
+  }
+}
+
+export interface RuleInput {
+  /** The recipe card's #chief- id (names the branch and worktree). */
+  id: string;
+  recipeId: string;
+  repo: RepoConfig;
+  file: string;
+  text: string;
+  why: string;
+  evidence: string[];
+}
+
+/**
+ * Apply an approved review-rule / claude-rule recipe: one line under "## Chief recipes" in
+ * the repo's REVIEW.md or CLAUDE.md, on its own branch, as a draft PR. You merge it.
+ */
+export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => {}): Promise<Outcome> {
+  const title = `recipe ${input.file}`;
+  const { branch, worktree } = await prepareWorktree(cfg, { id: input.id, title, repo: input.repo });
+  const blocked = (reason: string): Outcome => ({ status: "blocked", reason, summary: "", rounds: 0, branch, worktree, category: "other" });
+  const path = join(worktree, input.file);
+  const next = addRuleLine(existsSync(path) ? readFileSync(path, "utf8") : undefined, input.file, input.text);
+  if (next === undefined) return blocked(`${input.file} already has this rule`);
+  writeFileSync(path, next);
+  await mustGit(["add", input.file], worktree);
+  const commit = await git(["commit", "-m", `chief: add ${input.file} rule from recipe ${input.recipeId}`], worktree);
+  if (commit.code !== 0) return blocked(`commit rejected by the repo's hooks: ${tail(`${commit.stdout}\n${commit.stderr}`.trim(), 400)}`);
+
+  const summary = `Adds one line under "## Chief recipes" in ${input.file}.`;
+  const outcome: Outcome = { status: "pass", summary, blast: "green", rounds: 0, branch, worktree, findings: [] };
+  if (!cfg.openPr) return outcome;
+  log(`[${input.id}] opening draft PR for recipe ${input.recipeId}`);
+  const description = [
+    `Recipe \`${input.recipeId}\` from Chief's recipe book, approved on the board.`,
+    "",
+    "## Rule",
+    `\`${input.file}\` → ${input.text}`,
+    "",
+    "## Why",
+    input.why || "(none given)",
+    "",
+    "## Evidence",
+    ...input.evidence.map((e) => `- ${e}`),
+    "",
+    "## How to revert",
+    `Delete the line from \`${input.file}\` (or revert this PR's merge commit).`,
+  ].join("\n");
+  try {
+    await pushBranch(worktree, branch);
+    const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, description);
+    return { ...outcome, prId: pr.id, prUrl: pr.url };
+  } catch (err) {
+    return blocked(`rule is committed on branch ${branch} but the PR step failed: ${(err as Error).message}`);
   }
 }

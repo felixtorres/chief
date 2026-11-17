@@ -18,7 +18,8 @@ export type LedgerEvent =
       category?: BlockCategory;
       ruleFiles?: string[];
     } & Partial<RunMetrics>)
-  | { kind: "served" | "abandoned"; at: string; id: string; repo: string };
+  | { kind: "served" | "abandoned"; at: string; id: string; repo: string }
+  | { kind: "reflect"; at: string; id: string; repo: string; proposals: number; dropped: number; error?: string };
 
 export function categorize(reason = ""): BlockCategory {
   if (/^interrupted/i.test(reason)) return "interrupted";
@@ -208,4 +209,14 @@ export function weeklyStatsBlock(events: LedgerEvent[], repos: string[], now = n
   if (total.costReported < total.attempts) notes.push(`Cost reported on ${total.costReported} of ${total.attempts} attempts.`);
   lines.push("", ...notes.map((n) => `- ${n}`), "");
   return lines.join("\n");
+}
+
+/** Reflector calls made on the same local day as `now` (for the daily cap). */
+export function reflectionsOn(events: LedgerEvent[], now = new Date()): number {
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return events.filter((e) => {
+    if (e.kind !== "reflect") return false;
+    const t = new Date(e.at);
+    return new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime() === day;
+  }).length;
 }

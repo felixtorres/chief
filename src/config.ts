@@ -23,6 +23,8 @@ export interface Lanes {
   pass: string;
   blocked: string;
   served: string;
+  /** Where the reflector puts proposed recipes; created on the board when first needed. */
+  recipes: string;
 }
 
 export interface Config {
@@ -39,6 +41,14 @@ export interface Config {
   tracesDir: string;
   /** One JSON line per finished attempt and PR outcome; `chief stats` reads it. */
   ledgerFile: string;
+  /** Recipe book: proposals, approvals, rejections (tombstones). */
+  recipesFile: string;
+  /** Allowlist entries learned from approved allow-tool recipes, per repo. */
+  learnedFile: string;
+  /** Run the reflector after runs that went wrong (default true). */
+  reflector: boolean;
+  /** At most this many reflector calls per day (default 5). */
+  reflectorDailyCap: number;
   /**
    * Which of your own Claude Code settings files workers load ("user,project,local" are the
    * options). Default "" loads none, so allow rules you approved interactively never leak in.
@@ -76,6 +86,7 @@ export const DEFAULT_LANES: Lanes = {
   pass: "Pass",
   blocked: "Blocked",
   served: "Served",
+  recipes: "Recipes",
 };
 
 export const DEFAULT_ALLOWED_TOOLS = [
@@ -220,6 +231,10 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     ),
     tracesDir: expandHome(str(r.tracesDir, "tracesDir", join(stateDir, "traces")), baseDir),
     ledgerFile: expandHome(str(r.ledgerFile, "ledgerFile", join(stateDir, "ledger.jsonl")), baseDir),
+    recipesFile: expandHome(str(r.recipesFile, "recipesFile", join(stateDir, "recipes.json")), baseDir),
+    learnedFile: expandHome(str(r.learnedFile, "learnedFile", join(homedir(), ".config", "chief", "learned.json")), baseDir),
+    reflector: bool(r.reflector, "reflector", true),
+    reflectorDailyCap: num(r.reflectorDailyCap, "reflectorDailyCap", 5),
     settingSources: r.settingSources === undefined ? "" : strAllowEmpty(r.settingSources, "settingSources"),
     strictMcpConfig: bool(r.strictMcpConfig, "strictMcpConfig", true),
     pollSeconds: num(r.pollSeconds, "pollSeconds", 300),

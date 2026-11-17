@@ -86,7 +86,7 @@ tail -f ~/Library/Logs/chief/chief.log
 
 Each repo can also set `"ado": { "org", "project" }` when it lives in a different Azure DevOps org or project than the top-level `ado`.
 
-Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
+Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `recipesFile` (default `~/.local/state/chief/recipes.json`), `learnedFile` (allowlist entries from approved `allow-tool` recipes; default `~/.config/chief/learned.json`), `reflector` (default `true`), `reflectorDailyCap` (default `5`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
 
 ## The board
 
@@ -132,6 +132,31 @@ Every card gets a run log, `runs/chief-<id>.md` next to the board, linked from t
 
 Cooking the same card again adds a new attempt at the top and keeps the earlier ones. The raw stream-json transcript of every call is kept in `tracesDir/<id>/`, and the PR description gets an **Agent activity** section (files edited, commands run, denials per round) for reviewers who can't see your vault.
 
+## Recipe book: Chief learns from its own runs
+
+When a card goes badly, Chief asks a fresh, read-only Claude session what single rule would have prevented it. That covers more than one round, a Blocked card (for a work reason, not an outage), an allowlist denial, or an edit to rule files. A clean one-round pass costs nothing extra, and there are at most `reflectorDailyCap` (default 5) reflections a day.
+
+The reflector proposes up to 2 rules, preferring the most mechanical one that works:
+
+| Kind | Card label | When you approve it |
+|---|---|---|
+| `lint-card` | `📖 lint:` | Chief cooks it as a normal card: the worker adds a lint rule, test or script that enforces the rule |
+| `claude-rule` | `📖 CLAUDE.md:` | one line under `## Chief recipes` in the repo's CLAUDE.md, as a draft PR |
+| `review-rule` | `📖 REVIEW.md:` | one line under `## Chief recipes` in REVIEW.md, as a draft PR |
+| `allow-tool` | `📖 allow:` | added to `learned.json` (local, per repo), so workers may run that command from the next card on |
+
+Proposals appear as cards in the **Recipes** lane (Chief adds the lane if your board doesn't have one), each with its reason and evidence.
+
+- **Approve:** move the card to Ready. You can edit the rule text on the card first; Chief applies what the card says.
+- **Reject:** check it off or delete the card. Chief remembers the rejection and never proposes the same rule again.
+- Rules reach the repo only through PRs you merge. Nothing the reflector writes reaches a worker before you approve it.
+- `allow-tool` proposals are filtered before they reach the board, and checked again when applied and every time they're loaded. Anything that overlaps the denied tools, uses shell metacharacters, runs a shell or inline code (`bash`, `sudo`, `node -e` …), or is a bare tool prefix (`Bash(npm:*)`, `Bash(git:*)`) is dropped.
+
+```bash
+chief recipes [--repo api]        # the recipe book: proposed / applied / merged / rejected
+chief recipes revert r-1a2b3c     # undo an allow-tool; for a rule, tells you which PR to revert
+```
+
 ## Security model
 
 - Workers run with `--permission-mode dontAsk` and an explicit allowlist. `git push`, `git remote`, `az`, `curl`, `wget`, WebFetch and WebSearch are always denied. Only Chief pushes.
@@ -140,7 +165,8 @@ Cooking the same card again adds a new attempt at the top and keeps the earlier 
 - The reviewer gets read-only tools, and reads `REVIEW.md` from the target branch, never from the worker's worktree. A change that touches `REVIEW.md`, `CLAUDE.md` or `.claude/` anywhere is marked 🔴 with a note, so a worker can't rewrite the rules it's judged by without you seeing it.
 - PRs are always drafts. There is no merge code path, so use ADO branch policies to require your approval.
 - Everything (board, state, worktrees, logs) stays on the work machine.
-- When the worker needs a command it isn't allowed, that shows up on the Blocked card. Add it to the repo's `allowedTools` only if you're happy for it to run unattended.
+- When the worker needs a command it isn't allowed, that shows up on the Blocked card. Add it to the repo's `allowedTools` only if you're happy for it to run unattended (or approve the reflector's `allow-tool` recipe, which is vetted the same way).
+- The reflector reads run logs, which contain untrusted text (code, test output, card text). Its proposals are only data until you approve a card, and it has read-only tools.
 
 ## Day to day
 
@@ -148,6 +174,7 @@ Cooking the same card again adds a new attempt at the top and keeps the earlier 
 chief status                      # lane counts + recent runs
 chief stats [--repo api] [--weeks 4]  # first-pass rate, mean rounds, why cards got blocked, cost
 chief stats --digest              # write last week's stats table into today's digest now (the daemon does it every Monday)
+chief recipes                     # rules Chief proposed from its own runs (see Recipe book)
 chief run                         # cook the next Ready card now (no need to wait for the poll)
 scripts/launchd.sh restart        # after editing config or pulling an update (run npm run build first)
 scripts/launchd.sh uninstall
@@ -168,4 +195,5 @@ npm run build
 - Backlog triage (RICE + blast radius annotations on Backlog cards)
 - Morning digest notification
 - Several stations: per-repo concurrency and rules
-- Recipe book: record each correction as a rule
+- Recipe book R3: learn from the fixes you push to a Chief PR before merging, and from reverts
+- Recipe book R4: replay past cards to test a rule before you approve it; skill proposals

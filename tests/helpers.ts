@@ -37,6 +37,8 @@ export function makeConfig(root: string, repo: string, overrides: Record<string,
     boardPath: join(root, "board.md"),
     stateFile: join(root, "state", "state.json"),
     ledgerFile: join(root, "state", "ledger.jsonl"),
+    recipesFile: join(root, "state", "recipes.json"),
+    learnedFile: join(root, "config", "learned.json"),
     worktreesDir: join(root, "worktrees"),
     digestDir: join(root, "digests"),
     runsDir: join(root, "runs"),
@@ -69,4 +71,5 @@ export function resetFakeEnv(): void {
   delete process.env.FAKE_WORKER;
   delete process.env.FAKE_REVIEW;
   delete process.env.FAKE_DENY;
+  delete process.env.FAKE_REFLECT;
 }

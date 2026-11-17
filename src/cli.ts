@@ -11,6 +11,7 @@ import { callClaude } from "./claude.js";
 import { ConfigError, DEFAULT_CONFIG_PATH, expandHome, loadConfig, type Config } from "./config.js";
 import { computeStats, formatStats, readLedger } from "./ledger.js";
 import { notify, writeWeeklyStats } from "./notify.js";
+import { KIND_LABEL, RecipeStore, removeLearnedTool } from "./recipes.js";
 import { git, killAll, run } from "./run.js";
 import { StateStore } from "./state.js";
 
@@ -26,6 +27,8 @@ Usage:
   chief status                                board lanes + recent runs
   chief stats [--repo <name>] [--weeks <n>]   pass rate, rounds, blocked reasons (default 4 weeks)
   chief stats --digest                        write last week's stats into today's digest now
+  chief recipes [--repo <name>]               the recipe book: proposed, applied, rejected rules
+  chief recipes revert <r-id>                 undo an applied allow-tool recipe
 
 Options:
   --config <path>   config file (default: ${DEFAULT_CONFIG_PATH}, or $CHIEF_CONFIG)`;
@@ -180,6 +183,42 @@ function stats(cfg: Config, repo: string | undefined, weeksArg: string | undefin
   return 0;
 }
 
+function recipes(cfg: Config, args: string[], repo: string | undefined): number {
+  const store = new RecipeStore(cfg.recipesFile);
+  if (args[0] === "revert") {
+    const id = args[1];
+    const r = id ? store.get(id) : undefined;
+    if (!r) {
+      console.error(id ? `no recipe ${id}` : "usage: chief recipes revert <r-id>");
+      return 1;
+    }
+    if (r.kind === "allow-tool") {
+      const removed = removeLearnedTool(cfg.learnedFile, r.id);
+      store.update(r.id, { status: "reverted", reason: "reverted with chief recipes revert" });
+      console.log(removed ? `removed ${r.text} from ${cfg.learnedFile}` : `${r.text} was not in ${cfg.learnedFile}; marked reverted`);
+      return 0;
+    }
+    if (r.status === "proposed") {
+      console.log(`${r.id} is still a proposal: check it off or delete its card on the board to reject it`);
+      return 0;
+    }
+    const where = r.prUrl ? `PR !${r.prId} (${r.prUrl})` : "its branch";
+    console.log(`${r.id} changed ${KIND_LABEL[r.kind]} through ${where}. Revert it in the repo: delete the line, or revert the PR's merge. Then run this again once it's gone to mark it reverted.`);
+    if (r.status === "merged" || r.status === "applied") store.update(r.id, { status: "reverted", reason: "reverted by hand" });
+    return 0;
+  }
+  const list = store.all().filter((r) => !repo || r.repo === repo);
+  if (!list.length) {
+    console.log("the recipe book is empty");
+    return 0;
+  }
+  for (const r of list) {
+    const extra = r.prUrl ?? r.reason ?? "";
+    console.log(`${r.id}  ${r.status.padEnd(9)} ${r.repo.padEnd(14)} ${KIND_LABEL[r.kind].padEnd(9)} ${r.text}${extra ? `  (${extra})` : ""}`);
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -207,6 +246,8 @@ async function main(): Promise<number> {
     case "status":
       status(cfgOrExit(configPath));
       return 0;
+    case "recipes":
+      return recipes(cfgOrExit(configPath), positionals.slice(1), values.repo);
     case "stats": {
       const cfg = cfgOrExit(configPath);
       if (values.digest) {
