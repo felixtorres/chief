@@ -25,6 +25,11 @@ export interface CallSummary {
 
 type Raw = Record<string, unknown>;
 
+/** "1 turn", "3 turns". */
+export function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
 function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
@@ -252,7 +257,21 @@ export class RunLog {
   private renderAttempt(): string {
     const out: string[] = [`## Attempt ${this.attempt} · ${this.startedAt.toLocaleString("en-CA", { hour12: false })}`];
     let round = 0;
+    let lastChecks: { round: number; report: string } | undefined;
     for (const e of this.entries) {
+      if (e.kind === "checks") {
+        // Same failure as the round before: say so instead of pasting the output again.
+        if (!e.ok && lastChecks?.report === e.report) {
+          if (e.round !== round) {
+            round = e.round;
+            out.push("", `### Round ${round}`);
+          }
+          const status = e.report.split("\n").filter((l) => /^[✓✗] /.test(l)).join("\n");
+          out.push("", `**Chief's checks** ✗ failed, same output as round ${lastChecks.round}`, "", status);
+          continue;
+        }
+        lastChecks = { round: e.round, report: e.report };
+      }
       if (e.kind !== "outcome" && e.round !== round) {
         round = e.round;
         out.push("", `### Round ${round}`);
@@ -269,7 +288,7 @@ export class RunLog {
         const s = e.summary;
         const meta = [
           duration(s.durationMs),
-          s.numTurns !== undefined ? `${s.numTurns} turns` : "",
+          s.numTurns !== undefined ? plural(s.numTurns, "turn") : "",
           s.costUsd !== undefined ? `$${s.costUsd.toFixed(2)}` : "",
           s.model ? `model \`${s.model}\`` : "",
           s.sessionId ? `session \`${s.sessionId}\`` : "",
@@ -298,7 +317,7 @@ export class RunLog {
       case "note":
         return [`> ${oneLine(e.text, 600)}`];
       case "outcome":
-        return ["### Outcome", "", `${e.status === "pass" ? "✅" : "🚧"} ${oneLine(e.text, 800)}`];
+        return ["### Outcome", "", `${e.status === "pass" ? "✅" : "🚧"} ${oneLine(e.text.replace(/```/g, ""), 800)}`];
     }
   }
 

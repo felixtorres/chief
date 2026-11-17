@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildClaudeArgs } from "../src/claude.js";
 import { parseConfig } from "../src/config.js";
-import { cook, isRuleFile, parseReview, slugify, workerTools } from "../src/pipeline.js";
+import { briefFeedback, cook, isRuleFile, parseReview, readableOutput, slugify, workerTools } from "../src/pipeline.js";
 import { RunLog, tildify } from "../src/trace.js";
 import { fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
@@ -180,6 +180,26 @@ describe("cook", () => {
     expect(activity).toContain(join(cfg.runsDir, "chief-x1.md"));
   });
 
+  it("doesn't repeat identical check output across rounds and keeps code fences out of the outcome", () => {
+    const { cfg } = setup();
+    const log = new RunLog(cfg, { id: "x2", title: "t", repo: "demo" }, "chief/x2-t");
+    const report = "✓ test: `t` (exit 0)\n✗ lint: `l` (exit 2)\n```\nhuge lint output\n```";
+    log.add({ kind: "checks", round: 1, ok: false, report });
+    log.add({ kind: "checks", round: 2, ok: false, report });
+    log.add({ kind: "outcome", status: "blocked", text: "Blocked: x ```y```" });
+    const md = readFileSync(log.path, "utf8");
+    expect(md.match(/huge lint output/g)).toHaveLength(1);
+    expect(md).toContain("✗ failed, same output as round 1");
+    expect(md).toContain("🚧 Blocked: x y");
+  });
+
+  it("makes escaped one-line tool output readable and brief reasons fence-free", () => {
+    const out = readableOutput(`msg="a\\n\\tb\\n\\tc\\n\\td"`);
+    expect(out).toBe(`msg="a\n  b\n  c\n  d"`);
+    expect(readableOutput(Array.from({ length: 100 }, (_, i) => `l${i}`).join("\n")).split("\n")).toHaveLength(41);
+    expect(briefFeedback("Checks failed:\n✗ lint: `l` (exit 2)\n```\nnoise\n```")).toBe("Checks failed: ✗ lint: `l` (exit 2)");
+  });
+
   it("shortens home paths in the PR activity so it doesn't carry your username", () => {
     expect(tildify("/Users/me/Work Notes/runs/chief-x.md", "/Users/me")).toBe("~/Work Notes/runs/chief-x.md");
     expect(tildify("/Users/meme/x", "/Users/me")).toBe("/Users/meme/x");
@@ -226,12 +246,14 @@ describe("rule files", () => {
     for (const f of ["README.md", "docs/review.txt", "claude.ts", "src/CLAUDE.md.bak"]) expect(isRuleFile(f)).toBe(false);
   });
 
-  it("categorises a non-converging run by its last feedback, not by the truncated reason", async () => {
+  it("keeps a non-converging reason short and fence-free, and categorises it by its last feedback", async () => {
     const root = tmp();
     const repo = makeRepo(root);
     const cfg = makeConfig(root, repo, { maxRounds: 1, repos: { demo: { path: repo, testCmd: "test ! -f feature.txt || { for i in $(seq 200); do echo padding-line-$i; done; false; }" } } });
     const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
-    expect(out.reason).not.toContain("Checks failed");
+    expect(out.reason).toContain("Checks failed: ✗ test:");
+    expect(out.reason).not.toMatch(/padding-line-\d/);
+    expect(out.reason).not.toContain("```");
     expect(out.category).toBe("checks");
   });
 });

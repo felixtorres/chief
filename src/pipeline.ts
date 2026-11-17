@@ -8,7 +8,7 @@ import { fixPrompt, reviewPrompt, workerPrompt, type Brief } from "./prompts.js"
 import { addRuleLine, learnedTools } from "./recipes.js";
 import { git, sh, tail } from "./run.js";
 import type { ApprovedWork, Blast } from "./state.js";
-import { RunLog, type RunMetrics } from "./trace.js";
+import { plural, RunLog, type RunMetrics } from "./trace.js";
 
 export type Log = (msg: string) => void;
 
@@ -168,6 +168,28 @@ async function commitCount(worktree: string, base: string): Promise<number> {
   return Number(await mustGit(["rev-list", "--count", `${base}..HEAD`], worktree));
 }
 
+/**
+ * The end of a failing command's output, made readable. Some tools (golangci-lint's logfmt)
+ * print one huge line with escaped "\\n"/"\\t"; unescape those, then keep the last lines.
+ */
+export function readableOutput(text: string, maxLines = 40, maxChars = 3000): string {
+  let t = text.trim();
+  const escaped = (t.match(/\\n/g) ?? []).length;
+  if (escaped >= 3 && escaped > (t.match(/\n/g) ?? []).length) t = t.replace(/\\n/g, "\n").replace(/\\t/g, "  ");
+  const lines = t.split("\n");
+  if (lines.length > maxLines) t = "…\n" + lines.slice(-maxLines).join("\n");
+  return tail(t, maxChars);
+}
+
+/**
+ * Feedback cut down to one line for a block reason: no code blocks (the run log shows the
+ * full output in its round), just the failing checks or the first findings.
+ */
+export function briefFeedback(feedback: string, max = 400): string {
+  const flat = feedback.replace(/```[\s\S]*?(```|$)/g, " ").replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}
+
 async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promise<{ ok: boolean; report: string; failed: string[] }> {
   const lines: string[] = [];
   const failed: string[] = [];
@@ -177,7 +199,7 @@ async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promi
     const passed = r.code === 0 && !r.timedOut;
     if (!passed) failed.push(cmd);
     lines.push(`${passed ? "✓" : "✗"} ${name}: \`${cmd}\`${r.timedOut ? " (timed out)" : ` (exit ${r.code})`}`);
-    if (!passed) lines.push("```", tail(`${r.stdout}\n${r.stderr}`.trim(), 3000), "```");
+    if (!passed) lines.push("```", readableOutput(`${r.stdout}\n${r.stderr}`), "```");
   }
   return { ok: failed.length === 0, report: lines.join("\n") || "no checks configured", failed };
 }
@@ -349,7 +371,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
       const headNow = await mustGit(["rev-parse", "HEAD"], worktree);
       if (feedbackKind === "checks" && headNow === lastFailedHead) {
         runLog.add({ kind: "note", round: rounds, text: "The worker made no new commits after the checks failed, so running them again would fail the same way." });
-        return blocked(`checks fail and the worker made no new commits to fix them; last feedback: ${tail(feedback ?? "", 400)}`, rounds, summary, "checks");
+        return blocked(`checks fail and the worker made no new commits to fix them; last feedback: ${briefFeedback(feedback ?? "")}`, rounds, summary, "checks");
       }
 
       log(`[${input.id}] round ${rounds}: checks`);
@@ -366,7 +388,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
             const which = onBase.map((c) => `\`${c}\``).join(" and ");
             runLog.add({ kind: "note", round: rounds, text: `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes.` });
             return blocked(
-              `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes, so no fix round can repair them. Fix the check or the repo setup, then move the card back to Ready. ${tail(result.report, 300)}`,
+              `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes, so no fix round can repair them. Fix the check or the repo setup, then move the card back to Ready. ${briefFeedback(result.report, 300)}`,
               rounds, summary, "environment",
             );
           }
@@ -389,7 +411,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
 
     if (!approved) {
       const last = Math.min(rounds, cfg.maxRounds);
-      return blocked(`did not converge after ${cfg.maxRounds} rounds; last feedback: ${tail(feedback ?? "", 400)}`, last, summary, feedbackKind);
+      return blocked(`did not converge after ${cfg.maxRounds} rounds; last feedback: ${briefFeedback(feedback ?? "")}`, last, summary, feedbackKind);
     }
 
     const outcome: Outcome = {
@@ -397,7 +419,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
       metrics: runLog.metrics(), ruleFiles: approved.ruleFiles,
     };
     if (!cfg.openPr) {
-      runLog.add({ kind: "outcome", status: "pass", text: `Approved in ${rounds} round(s); work is on branch \`${branch}\` (openPr is off).` });
+      runLog.add({ kind: "outcome", status: "pass", text: `Approved in ${plural(rounds, "round")}; work is on branch \`${branch}\` (openPr is off).` });
       return outcome;
     }
 
@@ -410,7 +432,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     try {
       await pushBranch(worktree, branch);
       const pr = await createDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
-      runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${rounds} round(s).` });
+      runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${plural(rounds, "round")}.` });
       return {
         status: "pass", summary, blast: approved.blast, findings: approved.findings, rounds, branch, worktree, runLog: runLog.path,
         metrics: runLog.metrics(), ruleFiles: approved.ruleFiles, prId: pr.id, prUrl: pr.url, pushedHead: approvedHead,
