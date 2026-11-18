@@ -29,6 +29,8 @@ Usage:
   chief stats --digest                        write last week's stats into today's digest now
   chief recipes [--repo <name>]               the recipe book: proposed, applied, rejected rules
   chief recipes revert <r-id>                 undo an applied allow-tool recipe
+  chief triage [--all]                        score new Backlog cards now (--all: re-score them all)
+  chief morning                               send the morning summary now
 
 Options:
   --config <path>   config file (default: ${DEFAULT_CONFIG_PATH}, or $CHIEF_CONFIG)`;
@@ -229,6 +231,7 @@ async function main(): Promise<number> {
       repo: { type: "string" },
       weeks: { type: "string" },
       digest: { type: "boolean", default: false },
+      all: { type: "boolean", default: false },
       smoke: { type: "boolean", default: false },
       notify: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -256,6 +259,20 @@ async function main(): Promise<number> {
         return 0;
       }
       return stats(cfg, values.repo, values.weeks);
+    }
+    case "triage": {
+      const cfg = cfgOrExit(configPath);
+      const chief = new Chief(cfg, new StateStore(cfg.stateFile));
+      const n = await chief.triageBacklog({ force: true, all: values.all ?? false });
+      console.log(n ? `scored ${n} Backlog card(s)` : "nothing scored: no unscored cards in Backlog, or the call failed (see above)");
+      return 0;
+    }
+    case "morning": {
+      const cfg = cfgOrExit(configPath);
+      const chief = new Chief(cfg, new StateStore(cfg.stateFile));
+      const note = await chief.morningDigest(new Date(), true);
+      console.log(note ? `${note.title}\n${note.body}` : "quiet: nothing ran yesterday and nothing is waiting");
+      return 0;
     }
     case "run": {
       const cfg = cfgOrExit(configPath);

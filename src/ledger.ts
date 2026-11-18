@@ -21,7 +21,8 @@ export type LedgerEvent =
   | { kind: "served" | "abandoned"; at: string; id: string; repo: string }
   | { kind: "reflect"; at: string; id: string; repo: string; proposals: number; dropped: number; error?: string; signal?: string }
   | { kind: "corrected"; at: string; id: string; repo: string; files: number; insertions: number; deletions: number }
-  | { kind: "reverted"; at: string; id: string; repo: string; sha: string };
+  | { kind: "reverted"; at: string; id: string; repo: string; sha: string }
+  | { kind: "triage"; at: string; repo?: undefined; cards: number; scored: number; costUsd?: number; error?: string };
 
 export function categorize(reason = ""): BlockCategory {
   if (/^interrupted/i.test(reason)) return "interrupted";

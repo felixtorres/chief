@@ -50,6 +50,8 @@ export function makeConfig(root: string, repo: string, overrides: Record<string,
     fetchBeforeBranch: false,
     defaultRepo: "demo",
     repos: { demo: { path: repo, testCmd: "test -f feature.txt" } },
+    triage: false,
+    morningDigestHour: false,
     ...overrides,
   });
 }
@@ -76,4 +78,5 @@ export function resetFakeEnv(): void {
   delete process.env.FAKE_REFLECT;
   delete process.env.FAKE_AZ_PR;
   delete process.env.FAKE_SECOND_RESULT;
+  delete process.env.FAKE_TRIAGE;
 }

@@ -4,7 +4,9 @@ import { prDetails, type PrDetails } from "./ado.js";
 import { Card, Lane, laneKey, readBoard, updateBoard } from "./board.js";
 import type { Config, RepoConfig } from "./config.js";
 import { appendLedger, categorize, readLedger, reflectionsOn } from "./ledger.js";
-import { notify, writeWeeklyStats, type Note } from "./notify.js";
+import { MORNING_MARKER, morningSummary, type BoardSnapshot } from "./morning.js";
+import { appendDigestBlock, digestHas, notify, writeWeeklyStats, type Note } from "./notify.js";
+import { TRIAGE_BATCH, TRIAGE_ICON, triage, triageStatus } from "./triage.js";
 import { applyRule, cook, removeWorktree, type Log, type Outcome } from "./pipeline.js";
 import {
   addLearnedTool, allowToolProblem, KIND_LABEL, newRecipeId, RecipeStore, recipeCardNotes, recipeCardText, recipeTextFromTitle, RULE_FILE,
@@ -59,6 +61,7 @@ export function passStatus(o: Outcome, id: string): string {
 
 export class Chief {
   private lastServedCheck = 0;
+  private lastTriage = 0;
   private stopping = false;
   private recipeStore?: RecipeStore;
 
@@ -490,17 +493,95 @@ export class Chief {
     }
   }
 
+  /** What needs you on the board right now, for the morning summary. */
+  private snapshot(): BoardSnapshot {
+    if (!existsSync(this.cfg.boardPath)) return { pass: [], blocked: [], recipes: 0 };
+    const board = readBoard(this.cfg.boardPath);
+    const open = (lane: string) => (board.lane(lane)?.cards ?? []).filter((c) => !c.checked);
+    return {
+      pass: open(this.cfg.lanes.pass).map((c) => c.cleanTitle),
+      blocked: open(this.cfg.lanes.blocked).map((c) => c.cleanTitle),
+      recipes: open(this.cfg.lanes.recipes).filter((c) => c.recipe).length,
+    };
+  }
+
+  /**
+   * From the configured hour, once a day: yesterday's runs and what is waiting for you, plus
+   * the week on the weekly-stats day. Goes into the digest and to Teams / the desktop.
+   * `force` sends it now even if it already went out today. Never fails the loop.
+   */
+  async morningDigest(now = new Date(), force = false): Promise<Note | undefined> {
+    const hour = this.cfg.morningDigestHour;
+    if (!force && (hour === undefined || now.getHours() < hour)) return undefined;
+    try {
+      if (!force && digestHas(this.cfg, MORNING_MARKER, now)) return undefined;
+      const weekly = this.cfg.weeklyStatsDay !== undefined && now.getDay() === this.cfg.weeklyStatsDay;
+      const m = morningSummary(readLedger(this.cfg.ledgerFile), this.snapshot(), now, weekly);
+      appendDigestBlock(this.cfg, m.block, now);
+      if (m.note) await this.send(this.cfg, m.note);
+      this.log(m.note ? `morning summary sent: ${m.note.title}` : "morning summary: quiet day, nothing sent");
+      return m.note;
+    } catch (err) {
+      this.log(`morning summary failed: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Score Backlog cards Chief hasn't scored yet (no 🤖 status) with RICE + blast radius, in one
+   * batched call at most every triageIntervalMinutes. Advisory: cards never move. `all`
+   * re-scores every open Backlog card; `force` ignores the interval and the triage switch.
+   * Returns how many cards were scored.
+   */
+  async triageBacklog(opts: { force?: boolean; all?: boolean } = {}): Promise<number> {
+    if (!opts.force && (!this.cfg.triage || Date.now() - this.lastTriage < this.cfg.triageIntervalMinutes * 60_000)) return 0;
+    if (!existsSync(this.cfg.boardPath)) return 0;
+    const want = (c: Card) => !c.checked && !c.recipe && (opts.all ? !c.status || c.status.startsWith(TRIAGE_ICON) : !c.status);
+    const batch = (readBoard(this.cfg.boardPath).lane(this.cfg.lanes.backlog)?.cards ?? []).filter(want).slice(0, TRIAGE_BATCH);
+    if (!batch.length) return 0;
+    this.lastTriage = Date.now();
+    try {
+      this.log(`triaging ${batch.length} Backlog card(s)`);
+      const res = await triage(this.cfg, batch.map((c) => ({ title: c.cleanTitle, notes: c.notes, repo: c.repo })));
+      // The board may have changed during the call: match cards by their title text.
+      const scored = updateBoard(this.cfg.boardPath, (board) => {
+        const lane = board.lane(this.cfg.lanes.backlog);
+        let n = 0;
+        for (const [i, score] of res.scores) {
+          const card = lane?.cards.find((c) => c.title === batch[i - 1]!.title && want(c));
+          if (!card) continue;
+          card.setStatus(triageStatus({ ...score, repo: card.repo ? undefined : score.repo }));
+          n++;
+        }
+        return n;
+      });
+      appendLedger(this.cfg.ledgerFile, { kind: "triage", at: new Date().toISOString(), cards: batch.length, scored, costUsd: res.costUsd, error: res.error });
+      if (res.error) this.log(res.error);
+      if (res.dropped.length) this.log(`triage scores dropped: ${res.dropped.join("; ")}`);
+      this.log(`triaged ${scored} of ${batch.length} Backlog card(s)`);
+      return scored;
+    } catch (err) {
+      this.log(`triage failed: ${(err as Error).message}`);
+      return 0;
+    }
+  }
+
   /** One pass of the loop. Returns true if a card was handled. */
   async tick(selector?: string): Promise<boolean> {
     await this.checkServed();
     this.weeklyStats();
+    await this.morningDigest();
     try {
       this.syncRecipes();
     } catch (err) {
       this.log(`recipe sync failed: ${(err as Error).message}`);
     }
     const claimed = this.claim(selector);
-    if (!claimed) return false;
+    if (!claimed) {
+      // Only when the kitchen is idle, so scoring never delays a Ready card.
+      if (!selector) await this.triageBacklog();
+      return false;
+    }
     await this.cookCard(claimed);
     return true;
   }

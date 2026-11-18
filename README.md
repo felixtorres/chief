@@ -86,7 +86,7 @@ tail -f ~/Library/Logs/chief/chief.log
 
 Each repo can also set `"ado": { "org", "project" }` when it lives in a different Azure DevOps org or project than the top-level `ado`.
 
-Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `recipesFile` (default `~/.local/state/chief/recipes.json`), `learnedFile` (allowlist entries from approved `allow-tool` recipes; default `~/.config/chief/learned.json`), `reflector` (default `true`), `reflectorDailyCap` (default `5`), `recipeBudget` (default `30`), `azCmd` (default `["az"]`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
+Other keys, with defaults in `src/config.ts`: `runsDir` (run logs; default `runs/` next to the board), `tracesDir` (raw transcripts; default `~/.local/state/chief/traces`), `ledgerFile` (one JSON line per attempt and PR outcome, read by `chief stats`; default `~/.local/state/chief/ledger.jsonl`), `recipesFile` (default `~/.local/state/chief/recipes.json`), `learnedFile` (allowlist entries from approved `allow-tool` recipes; default `~/.config/chief/learned.json`), `reflector` (default `true`), `reflectorDailyCap` (default `5`), `recipeBudget` (default `30`), `azCmd` (default `["az"]`), `weeklyStatsDay` (weekday the weekly stats table goes into the digest, 0 = Sunday … 6 = Saturday; default `1`, Monday; `false` turns it off), `morningDigestHour` (0–23, default `8`; `false` turns the morning summary off), `triage` (default `true`), `triageIntervalMinutes` (default `60`), `settingSources` (default `""`, see Security model), `strictMcpConfig` (default `true`), `lanes` (rename lanes; matching ignores emoji and case), `allowedTools` / `disallowedTools` / `reviewAllowedTools`, `workerPermissionMode` / `reviewPermissionMode` (default `dontAsk`: anything not allowlisted is refused, never prompted), `stateFile`, `worktreesDir`, `fetchBeforeBranch`, `claudeCmd`.
 
 ## The board
 
@@ -107,6 +107,20 @@ The Kanban plugin stores the board as plain markdown, which is what Chief reads 
 - When a card's PR is merged, Chief moves it to **Served** and removes its worktree and local `chief/` branch. Blocked and Pass cards keep theirs, so a retry continues where it stopped.
 - Moving a Blocked card back to Ready retries it on the same branch. The worker is told why the last attempt stopped and which commits it already made. If only the PR step failed and the branch hasn't changed, Chief skips the worker, checks and review and just opens the PR.
 - When a check fails, Chief runs it once on the base commit. If it fails there too, the card is blocked straight away (category `environment`) instead of spending fix rounds on something the card didn't break. A fix round that adds no new commits also ends the run.
+
+### Backlog triage
+
+When nothing is Ready, Chief scores Backlog cards it hasn't scored yet, at most once an hour, in one cheap batched call (up to 10 cards, no tools: card text plus each repo's `CLAUDE.md` only):
+
+```markdown
+- [ ] Add retry to the export job #repo/api<br>🤖 📊 RICE 4.8 · R4 I2 C60% E1d · 🟡 yellow · touches every nightly export
+```
+
+RICE = reach (1–10) × impact (0.25–3) × confidence (50–100%) ÷ effort (days). Blast radius uses the reviewer's 🟢/🟡/🔴 scale. A card without a `#repo/` tag gets `suggest repo <name>` when one clearly fits. It is advisory only: cards never move and nothing is cooked. To re-score a card, delete its `🤖` line; `chief triage --all` re-scores the whole Backlog. Turn it off with `"triage": false`.
+
+### Morning summary
+
+From `morningDigestHour` (default 8) once a day, Chief sends one notification (Teams, or the desktop) and adds it to the digest: yesterday's runs, merges, your edits and cost; what is waiting at the Pass and in Blocked; recipes to review. On the weekly-stats day it adds one line for the week (first-pass rate against the week before). Nothing is sent on a quiet day. `chief morning` sends it now.
 
 ### Stacking cards: `#base/`
 
@@ -186,6 +200,8 @@ chief status                      # lane counts + recent runs
 chief stats [--repo api] [--weeks 4]  # first-pass rate, mean rounds, why cards got blocked, cost
 chief stats --digest              # write last week's stats table into today's digest now (the daemon does it every Monday)
 chief recipes                     # rules Chief proposed from its own runs (see Recipe book)
+chief triage [--all]              # score new Backlog cards now (--all re-scores every one)
+chief morning                     # send the morning summary now
 chief run                         # cook the next Ready card now (no need to wait for the poll)
 scripts/launchd.sh restart        # after editing config or pulling an update (run npm run build first)
 scripts/launchd.sh uninstall
@@ -203,7 +219,5 @@ npm run build
 
 ## Roadmap
 
-- Backlog triage (RICE + blast radius annotations on Backlog cards)
-- Morning digest notification
 - Several stations: per-repo concurrency and rules
 - Recipe book R4: replay past cards to test a rule before you approve it; skill proposals

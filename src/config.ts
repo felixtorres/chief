@@ -78,6 +78,12 @@ export interface Config {
   teamsWebhook?: string;
   /** Weekday (0 = Sunday … 6 = Saturday) the weekly stats block goes into the digest; undefined = off. */
   weeklyStatsDay?: number;
+  /** Score new Backlog cards with RICE + blast radius (default true). Advisory only. */
+  triage: boolean;
+  /** At most one triage call per this many minutes (default 60). */
+  triageIntervalMinutes: number;
+  /** Local hour (0–23) from which the morning summary goes out, once a day; undefined = off. */
+  morningDigestHour?: number;
 }
 
 export const DEFAULT_CONFIG_PATH =
@@ -165,6 +171,16 @@ function weekday(v: unknown, key: string): number | undefined {
   if (v === false) return undefined;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 6) {
     throw new ConfigError(`config: "${key}" must be 0–6 (0 = Sunday) or false`);
+  }
+  return v;
+}
+
+/** 0–23, default 8; false turns the morning summary off. */
+function hour(v: unknown, key: string): number | undefined {
+  if (v === undefined || v === null) return 8;
+  if (v === false) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 23) {
+    throw new ConfigError(`config: "${key}" must be 0–23 or false`);
   }
   return v;
 }
@@ -260,6 +276,9 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
     ado: adoSettings(r.ado, "ado"),
     teamsWebhook: r.teamsWebhook ? str(r.teamsWebhook, "teamsWebhook") : undefined,
     weeklyStatsDay: weekday(r.weeklyStatsDay, "weeklyStatsDay"),
+    triage: bool(r.triage, "triage", true),
+    triageIntervalMinutes: num(r.triageIntervalMinutes, "triageIntervalMinutes", 60),
+    morningDigestHour: hour(r.morningDigestHour, "morningDigestHour"),
   };
 }
 

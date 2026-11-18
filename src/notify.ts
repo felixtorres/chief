@@ -8,6 +8,8 @@ export interface Note {
   title: string;
   body: string;
   url?: string;
+  /** false: already in the digest (a whole block), so only send it to Teams / the desktop. */
+  digest?: boolean;
 }
 
 function pad(n: number): string {
@@ -26,25 +28,36 @@ export function appendDigest(cfg: Config, note: Note, now = new Date()): string 
   return file;
 }
 
+/** Does today's digest already hold the block with this marker? */
+export function digestHas(cfg: Config, marker: string, now = new Date()): boolean {
+  const file = digestFile(cfg, now);
+  return existsSync(file) && readFileSync(file, "utf8").includes(marker);
+}
+
+/** Append a Markdown block (that carries its own marker) to today's digest. */
+export function appendDigestBlock(cfg: Config, block: string, now = new Date()): string {
+  mkdirSync(cfg.digestDir, { recursive: true });
+  const file = digestFile(cfg, now);
+  appendFileSync(file, block);
+  return file;
+}
+
 /**
  * Add last week's stats to today's digest, once per day. Returns the file written, or
  * undefined if it was already there or there was nothing to report.
  */
 export function writeWeeklyStats(cfg: Config, now = new Date()): string | undefined {
-  const file = digestFile(cfg, now);
-  if (existsSync(file) && readFileSync(file, "utf8").includes(WEEKLY_MARKER)) return undefined;
+  if (digestHas(cfg, WEEKLY_MARKER, now)) return undefined;
   const block = weeklyStatsBlock(readLedger(cfg.ledgerFile), Object.keys(cfg.repos), now);
-  if (!block) return undefined;
-  mkdirSync(cfg.digestDir, { recursive: true });
-  appendFileSync(file, block);
-  return file;
+  return block ? appendDigestBlock(cfg, block, now) : undefined;
 }
 
 /** Teams "Workflows" incoming webhook (the successor to retired O365 connectors). */
 async function postTeams(webhook: string, note: Note): Promise<boolean> {
   const body = [
     { type: "TextBlock", text: note.title, weight: "Bolder", size: "Medium", wrap: true },
-    { type: "TextBlock", text: note.body, wrap: true },
+    // One TextBlock per line: Teams doesn't reliably render a bare "\n" inside one.
+    ...note.body.split("\n").filter((l) => l.trim()).map((text) => ({ type: "TextBlock", text, wrap: true })),
   ];
   const card = {
     type: "message",
@@ -83,9 +96,9 @@ async function desktop(note: Note): Promise<boolean> {
   return (await run("notify-send", ["Chief: " + note.title, body])).code === 0;
 }
 
-/** Digest file always; then Teams if configured and reachable, otherwise a desktop notification. */
+/** Digest file (unless note.digest is false); then Teams if configured and reachable, otherwise a desktop notification. */
 export async function notify(cfg: Config, note: Note): Promise<"teams" | "desktop" | "digest-only"> {
-  appendDigest(cfg, note);
+  if (note.digest !== false) appendDigest(cfg, note);
   if (cfg.teamsWebhook && (await postTeams(cfg.teamsWebhook, note))) return "teams";
   return (await desktop(note)) ? "desktop" : "digest-only";
 }

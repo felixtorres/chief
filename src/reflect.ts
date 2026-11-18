@@ -28,7 +28,7 @@ function clip(text: string, max: number): string {
 }
 
 /** A file as it is on the repo's default branch (origin first), never a worker's worktree. */
-async function fromTarget(repo: RepoConfig, file: string): Promise<string> {
+export async function fromTarget(repo: RepoConfig, file: string): Promise<string> {
   for (const ref of [`origin/${repo.defaultBranch}`, repo.defaultBranch]) {
     const r = await git(["show", `${ref}:${file}`], repo.path);
     if (r.code === 0) return r.stdout;

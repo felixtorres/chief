@@ -8,6 +8,7 @@
 //   FAKE_DENY    a shell command to report as permission-denied
 //   FAKE_REVIEW  comma list of verdicts per review call, e.g. "changes,approve"
 //   FAKE_REFLECT the reflector's reply (default: {"proposals":[]})
+//   FAKE_TRIAGE  the triage reply (default: {"cards":[]})
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,6 +55,10 @@ function out(result, isError = false) {
 if (prompt.includes("RECIPE KEEPER")) {
   tool("Read", { file_path: join(process.cwd(), "README.md") });
   out(process.env.FAKE_REFLECT ?? '{"proposals":[]}');
+}
+
+if (prompt.includes("EXPEDITER")) {
+  out(process.env.FAKE_TRIAGE ?? '{"cards":[]}');
 }
 
 if (prompt.includes("REVIEWER AT THE PASS")) {
