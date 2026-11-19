@@ -54,7 +54,10 @@ function previousSection(p: Brief["previous"]): string {
     lines.push("- Your branch already has these commits from it (newest first):", ...p.commits.map((c) => `  - ${c}`));
     lines.push("- Start from them: check what is already done and finish the rest; don't redo it.");
   }
-  lines.push("- If the reason above is still outside your control, reply BLOCKED: and say what a person must change.");
+  lines.push(
+    "- If the reason above was failing checks, don't decide that yourself: do the card's work, run the checks once, and reply with your summary. Chief reruns the checks and compares them with the target branch.",
+    "- If the reason above is something else that is still outside your control (a question, missing access), reply BLOCKED: and say what a person must change.",
+  );
   return lines.join("\n") + "\n";
 }
 
@@ -84,7 +87,7 @@ Rules:
 1. Read the surrounding code first and follow the existing style and conventions (see CLAUDE.md if present).
 2. Write or identify an ACCEPTANCE TEST that fails before your change and passes after it.
 3. Make the smallest change that satisfies the card. No unrelated refactors, no new dependencies, no CI/deploy config changes.
-4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary. Run every command in the foreground and wait for it; never start background commands, because your session ends when you reply. The full checks are heavy and Chief runs them again after you, so run them once, when your change is done, not after every edit; while you work, use a narrower test (one package or file) if your allowlist has one.${extraCommands(brief.repo)}
+4. Run ${checksLine(brief.repo)} and make them pass. Shell access is a strict allowlist: run each check exactly as written, as its own command (no $(...), heredocs, pipes or chained variations). If a command is denied, don't retry variations; carry on without it and mention it in your summary. Run every command in the foreground and wait for it; never start background commands, because your session ends when you reply. The full checks are heavy and Chief runs them again after you, so run them once, when your change is done, not after every edit; while you work, use a narrower test (one package or file) if your allowlist has one. If the full checks fail only in code your change doesn't touch (a slow or flaky test elsewhere, or something already broken on the target branch), don't reply BLOCKED: commit your work, name the failing test in your summary, and finish; Chief reruns the checks and compares them with the target branch to decide.${extraCommands(brief.repo)}
 5. Commit your work (git add, git commit) with a message in this repo's convention: match the style of \`git log\` and any commitlint or commit-msg hook, and if a hook rejects the message, fix it and commit again. Never push, open PRs, or change remotes.
 6. If the card is ambiguous, unsafe, or impossible, make no changes and reply with a first line of "BLOCKED: <your question>".
 
