@@ -340,6 +340,34 @@ describe("retries and fix rounds", () => {
     expect(readFileSync(second.runLog!, "utf8")).toMatch(/skips straight to the PR/);
   });
 
+  it("rebases a retried card onto the target when the target has moved on", async () => {
+    const { cfg, input, repo } = setup();
+    const first = await cook(cfg, input);
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString().trim();
+    writeFileSync(join(repo, "fix.txt"), "fixed on main\n");
+    g("add", "fix.txt");
+    g("commit", "-q", "-m", "fix main");
+    const second = await cook(cfg, { ...input, previous: { reason: "checks failed on main" } });
+    const wt = (...args: string[]) => execFileSync("git", args, { cwd: second.worktree, stdio: "pipe" }).toString().trim();
+    expect(wt("merge-base", "--is-ancestor", "main", "HEAD")).toBe(""); // throws if main isn't in the branch
+    expect(readFileSync(join(second.worktree!, "fix.txt"), "utf8")).toContain("fixed on main");
+    expect(first.worktree).toBe(second.worktree);
+    expect(readFileSync(second.runLog!, "utf8")).toMatch(/Rebased this branch's commits onto the latest main/);
+  });
+
+  it("leaves a retried branch on its old base when it doesn't rebase cleanly", async () => {
+    const { cfg, input, repo } = setup();
+    await cook(cfg, input);
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "feature.txt"), "a different feature\n");
+    g("add", "feature.txt");
+    g("commit", "-q", "-m", "conflicting change on main");
+    const second = await cook(cfg, input);
+    expect(readFileSync(second.runLog!, "utf8")).toMatch(/doesn't rebase cleanly/);
+    const status = execFileSync("git", ["status", "--porcelain"], { cwd: second.worktree }).toString();
+    expect(status).not.toMatch(/^(UU|AA)/m); // the rebase was aborted, nothing half-applied
+  });
+
   it("tells a retried worker why the last attempt stopped and what it already committed", async () => {
     const { cfg, input } = setup();
     await cook(cfg, input);

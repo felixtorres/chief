@@ -109,6 +109,7 @@ The Kanban plugin stores the board as plain markdown, which is what Chief reads 
 - When a check fails, Chief first runs the failing command again. If it passes the second time, the failure is treated as a flaky test and the run carries on.
 - If it fails again, Chief runs it once on the base commit and compares the failure lines (FAIL, ×, ERROR…, ignoring timings and paths). If the branch fails the same way the base does, the card is blocked straight away (category `environment`) instead of spending fix rounds on something the card didn't break. If the branch has failures the base doesn't, the worker gets a fix round for just those and is told which failures are already on the base.
 - A fix round that adds no new commits also ends the run.
+- A retried card keeps its branch. If the target branch has moved on since the last attempt (for example, the fix that unblocked it was merged), Chief rebases the card's commits onto the latest target first. It skips this when the branch was already pushed or doesn't rebase cleanly, and says so in the run log.
 
 ### Backlog triage
 

@@ -102,7 +102,10 @@ async function mustGit(args: string[], cwd: string): Promise<string> {
   return r.stdout.trim();
 }
 
-export async function prepareWorktree(cfg: Config, input: Pick<CookInput, "id" | "title" | "repo" | "base">): Promise<{ branch: string; worktree: string; base: string }> {
+export async function prepareWorktree(
+  cfg: Config,
+  input: Pick<CookInput, "id" | "title" | "repo" | "base">,
+): Promise<{ branch: string; worktree: string; base: string; refreshed?: string }> {
   const { repo, id, title } = input;
   const branch = `chief/${id}-${slugify(title)}`;
   const worktree = join(cfg.worktreesDir, `${repo.name}-${id}`);
@@ -120,8 +123,38 @@ export async function prepareWorktree(cfg: Config, input: Pick<CookInput, "id" |
     const exists = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo.path)).code === 0;
     await mustGit(exists ? ["worktree", "add", worktree, branch] : ["worktree", "add", "-b", branch, worktree, baseRef], repo.path);
   }
+  const refreshed = await refreshBranch(worktree, branch, baseRef);
   const base = await mustGit(["merge-base", "HEAD", baseRef], worktree);
-  return { branch, worktree, base };
+  return { branch, worktree, base, refreshed };
+}
+
+/**
+ * A retried card reuses its branch, which starts wherever the target was on the first
+ * attempt. When the target has moved on (say, the fix that unblocked the card was merged),
+ * rebase the card's commits onto it so the worker and the checks see today's code. A branch
+ * that was already pushed is left alone (rewriting it would need a force push), and so is
+ * one that doesn't rebase cleanly. Returns a note for the run log, or undefined.
+ */
+async function refreshBranch(worktree: string, branch: string, baseRef: string): Promise<string | undefined> {
+  if ((await git(["merge-base", "--is-ancestor", baseRef, "HEAD"], worktree)).code === 0) return undefined; // up to date
+  if ((await git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], worktree)).code === 0) {
+    return `${baseRef} has moved on, but this branch was already pushed, so it stays on its old base.`;
+  }
+  const before = await mustGit(["rev-parse", "--short", "HEAD"], worktree);
+  const r = await git(["-c", "core.editor=true", "rebase", "--quiet", baseRef], worktree);
+  if (r.code !== 0) {
+    await git(["rebase", "--abort"], worktree);
+    return `${baseRef} has moved on, but this branch doesn't rebase cleanly onto it (${oneLineErr(r.stderr || r.stdout)}), so it stays on its old base.`;
+  }
+  const after = await mustGit(["rev-parse", "--short", "HEAD"], worktree);
+  return after === before
+    ? `Moved the branch up to the latest ${baseRef}.`
+    : `Rebased this branch's commits onto the latest ${baseRef} (${before} → ${after}) so the worker and the checks see today's code.`;
+}
+
+function oneLineErr(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 160 ? flat.slice(0, 159) + "…" : flat;
 }
 
 /**
@@ -324,7 +357,7 @@ function prDescription(input: CookInput, summary: string, checks: string, rev: R
 
 /** Brief → worker → proof → review loop (max rounds) → draft PR. Never merges. */
 export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): Promise<Outcome> {
-  const { branch, worktree, base } = await prepareWorktree(cfg, input);
+  const { branch, worktree, base, refreshed } = await prepareWorktree(cfg, input);
   const head = await mustGit(["rev-parse", "HEAD"], worktree);
   const commits = (await mustGit(["log", "--oneline", "-n", "10", `${base}..HEAD`], worktree)).split("\n").filter(Boolean);
   const brief: Brief = {
@@ -334,7 +367,10 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     previous: input.previous?.reason || commits.length ? { reason: input.previous?.reason, commits } : undefined,
   };
   const runLog = new RunLog(cfg, { id: input.id, title: input.title, repo: input.repo.name }, branch);
-  runLog.write();
+  if (refreshed) {
+    log(`[${input.id}] ${refreshed}`);
+    runLog.add({ kind: "note", round: 1, text: refreshed });
+  } else runLog.write();
   const blocked = (reason: string, rounds: number, summary = "", category = categorize(reason)): Outcome => {
     runLog.add({ kind: "outcome", status: "blocked", text: `Blocked after round ${rounds}: ${reason}` });
     return { status: "blocked", reason, summary, rounds, branch, worktree, runLog: runLog.path, metrics: runLog.metrics(), category };
