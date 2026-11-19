@@ -173,7 +173,7 @@ async function commitCount(worktree: string, base: string): Promise<number> {
  * print one huge line with escaped "\\n"/"\\t"; unescape those, then keep the last lines.
  */
 export function readableOutput(text: string, maxLines = 40, maxChars = 3000): string {
-  let t = text.trim();
+  let t = stripAnsi(text).trim();
   const escaped = (t.match(/\\n/g) ?? []).length;
   if (escaped >= 3 && escaped > (t.match(/\n/g) ?? []).length) t = t.replace(/\\n/g, "\n").replace(/\\t/g, "  ");
   const lines = t.split("\n");
@@ -190,32 +190,79 @@ export function briefFeedback(feedback: string, max = 400): string {
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
-async function runChecks(cfg: Config, repo: RepoConfig, worktree: string): Promise<{ ok: boolean; report: string; failed: string[] }> {
+interface CheckResult {
+  ok: boolean;
+  report: string;
+  failed: string[];
+  /** Full output of each failing command, for comparing failures between runs. */
+  outputs: Record<string, string>;
+}
+
+async function runChecks(cfg: Config, repo: RepoConfig, worktree: string, only?: string[]): Promise<CheckResult> {
   const lines: string[] = [];
   const failed: string[] = [];
+  const outputs: Record<string, string> = {};
   for (const [name, cmd] of [["test", repo.testCmd], ["lint", repo.lintCmd]] as const) {
-    if (!cmd) continue;
+    if (!cmd || (only && !only.includes(cmd))) continue;
     const r = await sh(cmd, worktree, cfg.checkTimeoutMinutes * 60_000);
     const passed = r.code === 0 && !r.timedOut;
-    if (!passed) failed.push(cmd);
+    if (!passed) {
+      failed.push(cmd);
+      outputs[cmd] = `${r.stdout}\n${r.stderr}${r.timedOut ? "\n(timed out)" : ""}`;
+    }
     lines.push(`${passed ? "✓" : "✗"} ${name}: \`${cmd}\`${r.timedOut ? " (timed out)" : ` (exit ${r.code})`}`);
     if (!passed) lines.push("```", readableOutput(`${r.stdout}\n${r.stderr}`), "```");
   }
-  return { ok: failed.length === 0, report: lines.join("\n") || "no checks configured", failed };
+  return { ok: failed.length === 0, report: lines.join("\n") || "no checks configured", failed, outputs };
+}
+
+export function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+}
+
+/**
+ * The lines of a failing command's output that name what failed (FAIL, ×, ✗, ERROR,
+ * "N failed"), with timings, hashes and the worktree path taken out so the same failure
+ * reads the same on the branch and on the base. Lines that only echo another package's
+ * failure (pnpm's ELIFECYCLE) are dropped: they change with turbo's cancellation order.
+ */
+export function failureSignature(output: string, worktree = ""): Set<string> {
+  const sig = new Set<string>();
+  for (const raw of stripAnsi(output).split("\n")) {
+    if (!/\bFAIL(ED)?\b|×|✗|\bERROR\b|\b\d+ failed\b|\bfailed\b.*\btests?\b/i.test(raw)) continue;
+    if (/ELIFECYCLE/.test(raw)) continue;
+    let line = worktree ? raw.split(worktree).join("") : raw;
+    line = line
+      .replace(/\b[0-9a-f]{12,}\b/g, "#")
+      .replace(/\d+(\.\d+)?\s?(ms|s|m)\b/g, "T")
+      .replace(/\(\d+ tests?[^)]*\)/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (line) sig.add(line);
+  }
+  return sig;
+}
+
+/** Signature lines of the branch's failure that the base's failure doesn't have. */
+export function newFailures(branchOutput: string, baseOutput: string, worktree = ""): string[] {
+  const base = failureSignature(baseOutput, worktree);
+  return [...failureSignature(branchOutput, worktree)].filter((l) => !base.has(l));
 }
 
 /**
  * Run the failing checks on the base commit, in the same worktree (same deps and caches).
- * Returns the commands that fail there too; those failures are not the card's, so no fix
- * round can repair them. Returns [] if they pass on base or the base can't be checked out.
+ * Returns the output of each command that fails there too, so the caller can tell the
+ * base's own failures from the card's. Returns {} if they pass on base or the base can't
+ * be checked out.
  */
-async function failingOnBase(cfg: Config, worktree: string, base: string, branch: string, cmds: string[]): Promise<string[]> {
-  if ((await git(["checkout", "--quiet", "--detach", base], worktree)).code !== 0) return [];
-  const failing: string[] = [];
+async function failingOnBase(cfg: Config, worktree: string, base: string, branch: string, cmds: string[]): Promise<Record<string, string>> {
+  if ((await git(["checkout", "--quiet", "--detach", base], worktree)).code !== 0) return {};
+  const failing: Record<string, string> = {};
   try {
     for (const cmd of cmds) {
       const r = await sh(cmd, worktree, cfg.checkTimeoutMinutes * 60_000);
-      if (r.code !== 0 || r.timedOut) failing.push(cmd);
+      if (r.code !== 0 || r.timedOut) failing[cmd] = `${r.stdout}\n${r.stderr}${r.timedOut ? "\n(timed out)" : ""}`;
     }
   } finally {
     await mustGit(["checkout", "--quiet", branch], worktree);
@@ -310,6 +357,9 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     let rounds = 0;
     let lastFailedHead: string | undefined;
     let checkedBase = false;
+    let reranChecks = false;
+    /** Output of each check that also fails on the base commit. */
+    let baseFailures: Record<string, string> = {};
 
     // Last time this exact commit passed checks and review, and only the PR step failed.
     const prior = input.previous?.approved;
@@ -375,23 +425,49 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
       }
 
       log(`[${input.id}] round ${rounds}: checks`);
-      const result = await runChecks(cfg, input.repo, worktree);
+      let result = await runChecks(cfg, input.repo, worktree);
       checks = result.report;
       runLog.add({ kind: "checks", round: rounds, ok: result.ok, report: result.report });
+      if (!result.ok && !reranChecks) {
+        // One rerun of just the failing commands rules out a flaky test (timing tests miss
+        // their limits when the machine is busy) before anyone pays for a fix round.
+        reranChecks = true;
+        log(`[${input.id}] round ${rounds}: checks failed; running the failing ones again to rule out a flaky test`);
+        const again = await runChecks(cfg, input.repo, worktree, result.failed);
+        if (again.ok) {
+          runLog.add({ kind: "note", round: rounds, text: `${result.failed.map((c) => `\`${c}\``).join(" and ")} passed when run again, so the first failure looks flaky; carrying on.` });
+          result = { ...again, report: result.report.split("\n").filter((l) => /^[✓✗] /.test(l)).map((l) => l.replace(/^✗ (.*)$/, "✓ $1, passed on a second run")).join("\n") };
+          checks = result.report;
+        } else {
+          runLog.add({ kind: "checks", round: rounds, ok: false, report: again.report });
+          result = again;
+        }
+      }
       if (!result.ok) {
         lastFailedHead = headNow;
         if (!checkedBase) {
           checkedBase = true;
           log(`[${input.id}] checks failed; running them on ${targetBranch(input)} to see if the card caused it`);
-          const onBase = await failingOnBase(cfg, worktree, base, branch, result.failed);
-          if (onBase.length) {
-            const which = onBase.map((c) => `\`${c}\``).join(" and ");
-            runLog.add({ kind: "note", round: rounds, text: `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes.` });
-            return blocked(
-              `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes, so no fix round can repair them. Fix the check or the repo setup, then move the card back to Ready. ${briefFeedback(result.report, 300)}`,
-              rounds, summary, "environment",
-            );
-          }
+          baseFailures = await failingOnBase(cfg, worktree, base, branch, result.failed);
+        }
+        // A check that fails on the base and fails here with nothing the base doesn't also
+        // show is the base's problem; a fix round can't repair it. New failures are the card's.
+        const shared = result.failed.filter((c) => c in baseFailures);
+        const onlyBase = shared.filter((c) => newFailures(result.outputs[c] ?? "", baseFailures[c]!, worktree).length === 0);
+        if (onlyBase.length) {
+          const which = onlyBase.map((c) => `\`${c}\``).join(" and ");
+          runLog.add({ kind: "note", round: rounds, text: `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes, the same way.` });
+          return blocked(
+            `${which} also fail on ${targetBranch(input)} (${base.slice(0, 8)}) without this card's changes, so no fix round can repair them. Fix the check or the repo setup, then move the card back to Ready. ${briefFeedback(result.report, 300)}`,
+            rounds, summary, "environment",
+          );
+        }
+        if (shared.length) {
+          const lines = shared.flatMap((c) => newFailures(result.outputs[c] ?? "", baseFailures[c]!, worktree)).slice(0, 15);
+          runLog.add({ kind: "note", round: rounds, text: `${shared.map((c) => `\`${c}\``).join(" and ")} also fail on ${targetBranch(input)}, but this branch has failures the base doesn't, so the worker gets a fix round for those.` });
+          feedbackKind = "checks";
+          feedback = `Checks failed:\n${result.report}\n\nSome of these failures are already on ${targetBranch(input)} and are not yours; leave them alone. Fix only these, which ${targetBranch(input)} doesn't have:\n${lines.map((l) => `- ${l}`).join("\n")}`;
+          continue;
         }
         feedbackKind = "checks";
         feedback = `Checks failed:\n${result.report}`;

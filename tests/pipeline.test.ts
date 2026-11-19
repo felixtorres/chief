@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildClaudeArgs } from "../src/claude.js";
 import { parseConfig } from "../src/config.js";
-import { briefFeedback, cook, isRuleFile, parseReview, readableOutput, slugify, workerTools } from "../src/pipeline.js";
+import { briefFeedback, cook, failureSignature, isRuleFile, newFailures, parseReview, readableOutput, slugify, workerTools } from "../src/pipeline.js";
 import { RunLog, tildify } from "../src/trace.js";
 import { fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
@@ -271,6 +271,47 @@ describe("retries and fix rounds", () => {
     // The worktree is back on the card's branch afterwards.
     const { git } = await import("../src/run.js");
     expect((await git(["branch", "--show-current"], out.worktree)).stdout.trim()).toBe(out.branch);
+  });
+
+  it("reruns a failing check once and carries on when it passes the second time (flaky test)", async () => {
+    const root = tmp();
+    const repo = makeRepo(root);
+    const flag = join(root, "ran-once");
+    const cfg = makeConfig(root, repo, { maxRounds: 3, repos: { demo: { path: repo, testCmd: `test -f '${flag}' || { touch '${flag}'; echo "FAIL timing test"; false; }` } } });
+    const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
+    expect(out.status).toBe("pass");
+    expect(fakeCalls().filter((c) => !c.prompt.includes("REVIEWER"))).toHaveLength(1); // no fix round
+    expect(readFileSync(out.runLog!, "utf8")).toMatch(/passed when run again, so the first failure looks flaky/);
+  });
+
+  it("blocks as environment when the branch fails exactly the way the base does", async () => {
+    const root = tmp();
+    const repo = makeRepo(root);
+    const cfg = makeConfig(root, repo, { maxRounds: 3, repos: { demo: { path: repo, testCmd: `echo "FAIL tests/golden.test.ts > dev (\${RANDOM}ms)"; false` } } });
+    const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
+    expect(out.category).toBe("environment");
+    expect(fakeCalls()).toHaveLength(1);
+  });
+
+  it("gives a fix round for failures the base doesn't have, even when the base is broken too", async () => {
+    const root = tmp();
+    const repo = makeRepo(root);
+    const cmd = `echo "FAIL tests/golden.test.ts > dev"; if test -f feature.txt; then echo "FAIL tests/card.test.ts > new thing"; fi; false`;
+    const cfg = makeConfig(root, repo, { maxRounds: 2, repos: { demo: { path: repo, testCmd: cmd } } });
+    const out = await cook(cfg, { id: "abc123", title: "Add feature file", notes: [], repo: cfg.repos.demo! });
+    expect(out.category).not.toBe("environment");
+    const fix = fakeCalls().filter((c) => !c.prompt.includes("REVIEWER"))[1]!.prompt;
+    expect(fix).toMatch(/already on main and are not yours/);
+    expect(fix).toMatch(/Fix only these[^\n]*\n- FAIL tests\/card\.test\.ts > new thing/);
+    expect(fix).not.toMatch(/- FAIL tests\/golden/);
+  });
+
+  it("compares failures without timings, hashes or the worktree path", () => {
+    const a = "\x1b[31m FAIL \x1b[0m /w/t/packages/x tests/a.test.ts > slow (1532ms)\n@nex/x:test: [ELIFECYCLE] Test failed.\nok line";
+    const b = " FAIL  /w/u/packages/x tests/a.test.ts > slow (12ms)\n@nex/y:test: [ELIFECYCLE] Test failed.";
+    expect([...failureSignature(a, "/w/t")]).toEqual(["FAIL /packages/x tests/a.test.ts > slow (T)"]);
+    expect(newFailures(a, b.replace("/w/u", "/w/t"), "/w/t")).toEqual([]);
+    expect(newFailures(a + "\n FAIL tests/b.test.ts > other", b.replace("/w/u", "/w/t"), "/w/t")).toEqual(["FAIL tests/b.test.ts > other"]);
   });
 
   it("stops when the worker makes no new commits after checks failed", async () => {

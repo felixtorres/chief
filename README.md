@@ -106,7 +106,9 @@ The Kanban plugin stores the board as plain markdown, which is what Chief reads 
 - If you edit the board while Chief is writing, Chief notices the file changed, re-reads, and retries instead of overwriting you.
 - When a card's PR is merged, Chief moves it to **Served** and removes its worktree and local `chief/` branch. Blocked and Pass cards keep theirs, so a retry continues where it stopped.
 - Moving a Blocked card back to Ready retries it on the same branch. The worker is told why the last attempt stopped and which commits it already made. If only the PR step failed and the branch hasn't changed, Chief skips the worker, checks and review and just opens the PR.
-- When a check fails, Chief runs it once on the base commit. If it fails there too, the card is blocked straight away (category `environment`) instead of spending fix rounds on something the card didn't break. A fix round that adds no new commits also ends the run.
+- When a check fails, Chief first runs the failing command again. If it passes the second time, the failure is treated as a flaky test and the run carries on.
+- If it fails again, Chief runs it once on the base commit and compares the failure lines (FAIL, ×, ERROR…, ignoring timings and paths). If the branch fails the same way the base does, the card is blocked straight away (category `environment`) instead of spending fix rounds on something the card didn't break. If the branch has failures the base doesn't, the worker gets a fix round for just those and is told which failures are already on the base.
+- A fix round that adds no new commits also ends the run.
 
 ### Backlog triage
 
