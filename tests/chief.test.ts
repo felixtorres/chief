@@ -258,6 +258,18 @@ describe("#base/ tag", () => {
     expect(contains.code).toBe(0);
   });
 
+  it("falls back to the default branch once the base card is served", async () => {
+    const { cfg, chief, state } = setup({ Ready: ["Add feature file"] });
+    await chief.tick();
+    const first = state.byStatus("pass")[0]!;
+    state.upsert({ id: first.id, status: "served" });
+    await chief.cleanUp(first.id); // the merged card's branch is deleted
+    const text = readFileSync(cfg.boardPath, "utf8").replace("## Ready\n\n", `## Ready\n\n- [ ] Follow-up work #base/chief-${first.id}\n`);
+    writeFileSync(cfg.boardPath, text);
+    await chief.tick();
+    expect(state.byStatus("pass").find((r) => r.title === "Follow-up work")).toBeDefined();
+  });
+
   it("blocks when #base/ names a card Chief has no branch for, or a missing branch", async () => {
     const { cfg, chief } = setup({ Ready: ["Stacked #base/chief-abcdef", "Missing base #base/feature/nope"] });
     await chief.tick();

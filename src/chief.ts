@@ -159,8 +159,11 @@ export class Chief {
     const ref = /^chief-([0-9a-f]{6})$/.exec(tag);
     if (!ref) return { branch: tag };
     if (ref[1] === self) return { problem: "#base/ points at this card itself" };
-    const branch = this.state.get(ref[1]!)?.branch;
-    return branch ? { branch } : { problem: `#base/${tag}: Chief has no branch for card #chief-${ref[1]} yet` };
+    const run = this.state.get(ref[1]!);
+    // Once the base card is served its PR is merged and its branch is gone: stack on the
+    // repo's default branch, which now has that work.
+    if (run?.status === "served") return {};
+    return run?.branch ? { branch: run.branch } : { problem: `#base/${tag}: Chief has no branch for card #chief-${ref[1]} yet` };
   }
 
   async cookCard(c: Claimed): Promise<Outcome | undefined> {
