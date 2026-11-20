@@ -270,6 +270,22 @@ describe("#base/ tag", () => {
     expect(state.byStatus("pass").find((r) => r.title === "Follow-up work")).toBeDefined();
   });
 
+  it("follows a served stacked card down to the branch its PR merged into", async () => {
+    const { git } = await import("../src/run.js");
+    const { cfg, chief, state } = setup({ Ready: ["Add feature file"] });
+    await chief.tick();
+    const first = state.byStatus("pass")[0]!;
+    // Card 2 was stacked on card 1 and its PR merged into card 1's branch (card 1 still open).
+    state.upsert({ id: "222222", title: "Card 2", repo: "demo", status: "served", branch: "chief/222222-card-2", target: first.branch });
+    const firstHead = (await git(["rev-parse", "HEAD"], first.worktree!)).stdout.trim();
+    const text = readFileSync(cfg.boardPath, "utf8").replace("## Ready\n\n", "## Ready\n\n- [ ] Card 3 #base/chief-222222\n");
+    writeFileSync(cfg.boardPath, text);
+    await chief.tick();
+    const third = state.byStatus("pass").find((r) => r.title === "Card 3")!;
+    expect(third.target).toBe(first.branch);
+    expect((await git(["merge-base", "--is-ancestor", firstHead, "HEAD"], third.worktree!)).code).toBe(0);
+  });
+
   it("blocks when #base/ names a card Chief has no branch for, or a missing branch", async () => {
     const { cfg, chief } = setup({ Ready: ["Stacked #base/chief-abcdef", "Missing base #base/feature/nope"] });
     await chief.tick();
