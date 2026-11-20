@@ -22,7 +22,26 @@ function orgArgs(cfg: Config, repo: RepoConfig): string[] {
 
 export async function pushBranch(worktree: string, branch: string): Promise<void> {
   const r = await git(["push", "-u", "origin", branch], worktree);
-  if (r.code !== 0) throw new AdoError(`git push failed: ${tail(r.stderr, 500)}`);
+  if (r.code !== 0) throw new AdoError(`git push failed: ${pushError(`${r.stdout}\n${r.stderr}`)}`);
+}
+
+/**
+ * Say why a push failed in one line. Drops SSH's advisory banners (the "post-quantum key
+ * exchange" warning), and when a git hook (lefthook) stopped the push, names the failed
+ * step and the failing tests instead of the hook's whole log.
+ */
+export function pushError(output: string, max = 500): string {
+  // eslint-disable-next-line no-control-regex
+  const lines = output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").map((l) => l.trimEnd());
+  const kept = lines.filter((l) => l.trim() && !/^\*\* /.test(l.trim()));
+  const hookFailed = kept.filter((l) => /^\s*🥊\s*\S/.test(l)).map((l) => l.replace(/^\s*🥊\s*/, "").replace(/\s*\([\d.]+ seconds?\)/, "").trim());
+  const last = kept.filter((l) => /^(error|fatal|remote: error|!\s*\[rejected\])/i.test(l.trim())).map((l) => l.trim());
+  if (hookFailed.length) {
+    const fails = [...new Set(kept.filter((l) => /\bFAIL\b|Test timed out|Failed:\s/.test(l)).map((l) => l.replace(/\s+/g, " ").trim()))].slice(0, 5);
+    const msg = `a git pre-push hook stopped it; failed step${hookFailed.length > 1 ? "s" : ""}: ${hookFailed.join(", ")}${fails.length ? `. ${fails.join("; ")}` : ""}${last.length ? `. ${last.at(-1)}` : ""}`;
+    return msg.length > max ? msg.slice(0, max - 1) + "…" : msg;
+  }
+  return tail(kept.join(" ").replace(/\s+/g, " "), max);
 }
 
 /** Azure DevOps rejects PR descriptions longer than this. */

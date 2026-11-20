@@ -149,6 +149,34 @@ describe("config + digest", () => {
   });
 });
 
+describe("pushError", () => {
+  it("drops the SSH banner and names the failed hook step and test", async () => {
+    const { pushError } = await import("../src/ado.js");
+    const out = [
+      "** WARNING: connection is not using a post-quantum key exchange algorithm.",
+      "** This session may be vulnerable to \"store now, decrypt later\" attacks.",
+      "@nex/library:test:  \x1b[31mFAIL\x1b[0m  tests/pages.dom.test.ts > /nex/icon-picker mounts",
+      "@nex/library:test: Error: Test timed out in 5000ms.",
+      "Failed:    @nex/library#test",
+      "summary: (done in 110.74 seconds)",
+      "✔️ check-kits (1.23 seconds)",
+      "🥊 test-affected (88.45 seconds)",
+      "error: failed to push some refs to 'ssh.dev.azure.com:v3/org/proj/repo'",
+    ].join("\n");
+    const msg = pushError(out);
+    expect(msg).not.toMatch(/post-quantum/);
+    expect(msg).toMatch(/^a git pre-push hook stopped it; failed step: test-affected\./);
+    expect(msg).toContain("FAIL tests/pages.dom.test.ts > /nex/icon-picker mounts");
+    expect(msg).toContain("Test timed out in 5000ms");
+    expect(msg).toMatch(/error: failed to push some refs/);
+  });
+
+  it("keeps a plain push error, minus the banner", async () => {
+    const { pushError } = await import("../src/ado.js");
+    expect(pushError("** WARNING: post-quantum\n! [rejected] main -> main (fetch first)\nerror: failed to push some refs")).toBe("! [rejected] main -> main (fetch first) error: failed to push some refs");
+  });
+});
+
 describe("fitDescription", () => {
   it("leaves short descriptions alone and cuts long ones at a line under the limit", async () => {
     const { fitDescription } = await import("../src/ado.js");
