@@ -137,7 +137,7 @@ export class Chief {
         ? undefined
         : !recipe
           ? `unknown recipe ${card.recipe}`
-          : recipe.status !== "proposed"
+          : recipe.status !== "proposed" && recipe.status !== "failed" // a failed recipe can be retried
             ? `recipe ${card.recipe} is already ${recipe.status}`
             : undefined;
       if (!repo || base.problem || recipeProblem) {

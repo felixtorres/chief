@@ -332,6 +332,33 @@ describe("approving and rejecting recipes", () => {
     expect(reflectorCalls()).toHaveLength(before);
   });
 
+  it("uses a conventional commit message, and a failed recipe can be retried", async () => {
+    const { chmodSync, mkdirSync, rmSync } = await import("node:fs");
+    process.env.FAKE_REFLECT = reply(proposal());
+    const { cfg, chief, repo } = await bumpyRun();
+    const r = chief.recipes.all()[0]!;
+    // A commit-msg hook like nex-ts's commitlint: first it rejects everything, then only scoped messages pass.
+    mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+    const hook = join(repo, ".git", "hooks", "commit-msg");
+    writeFileSync(hook, '#!/bin/sh\necho "✖ scope may not be empty [scope-empty]"; exit 1\n');
+    chmodSync(hook, 0o755);
+    moveRecipe(cfg.boardPath, r.id, "Ready");
+    await chief.tick();
+    expect(chief.recipes.get(r.id)!.status).toBe("failed");
+    const blockedCard = readBoard(cfg.boardPath).lane("Blocked")!.cards.find((c) => c.recipe === r.id)!;
+    expect(blockedCard.status).toContain("scope may not be empty");
+
+    writeFileSync(hook, '#!/bin/sh\ngrep -qE "^[a-z]+\\([a-z-]+\\): " "$1" || { echo "✖ scope may not be empty"; exit 1; }\n');
+    moveRecipe(cfg.boardPath, r.id, "Ready");
+    await chief.tick();
+    expect(chief.recipes.get(r.id)!.status).toBe("applied");
+    const card = readBoard(cfg.boardPath).lane("Pass")!.cards.find((c) => c.recipe === r.id)!;
+    const branch = /`(chief\/[^`]+)`/.exec(card.status)![1]!;
+    expect(execFileSync("git", ["log", "-1", "--format=%s", branch], { cwd: repo }).toString()).toMatch(/^docs\(repo\): add REVIEW\.md rule from Chief recipe r-/);
+    expect(execFileSync("git", ["rev-list", "--count", `main..${branch}`], { cwd: repo }).toString().trim()).toBe("1");
+    rmSync(hook);
+  });
+
   it("won't apply a recipe card twice", async () => {
     process.env.FAKE_REFLECT = reply(proposal());
     const { cfg, chief } = await bumpyRun();

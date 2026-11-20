@@ -573,17 +573,40 @@ export interface RuleInput {
  * Apply an approved review-rule / claude-rule recipe: one line under "## Chief recipes" in
  * the repo's REVIEW.md or CLAUDE.md, on its own branch, as a draft PR. You merge it.
  */
+/**
+ * Commit a recipe's rule line. Repos lint commit messages differently (nex-ts wants a
+ * conventional type plus a scope from its own list), so try the common shapes in turn and
+ * keep the first the hooks accept. Returns undefined on success, else the last hook output.
+ */
+async function commitWithConventionalMessage(worktree: string, file: string, recipeId: string): Promise<string | undefined> {
+  const what = `add ${file} rule from Chief recipe ${recipeId}`;
+  let last = "";
+  for (const message of [`docs(repo): ${what}`, `docs: ${what}`, `chore: ${what}`, `chief: ${what}`]) {
+    const r = await git(["commit", "-m", message], worktree);
+    if (r.code === 0) return undefined;
+    last = `${r.stdout}\n${r.stderr}`.trim();
+  }
+  return last;
+}
+
 export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => {}): Promise<Outcome> {
   const title = `recipe ${input.file}`;
-  const { branch, worktree } = await prepareWorktree(cfg, { id: input.id, title, repo: input.repo });
+  const { branch, worktree, base } = await prepareWorktree(cfg, { id: input.id, title, repo: input.repo });
   const blocked = (reason: string): Outcome => ({ status: "blocked", reason, summary: "", rounds: 0, branch, worktree, category: "other" });
+  // A retry finds the last attempt's leftovers: drop anything uncommitted (this is Chief's own
+  // recipe worktree), and if the rule was already committed, go straight on to the PR.
+  await git(["reset", "--quiet", "--hard", "HEAD"], worktree);
+  await git(["clean", "-fdq", "--", input.file], worktree);
   const path = join(worktree, input.file);
+  const head = await mustGit(["rev-parse", "HEAD"], worktree);
   const next = addRuleLine(existsSync(path) ? readFileSync(path, "utf8") : undefined, input.file, input.text);
-  if (next === undefined) return blocked(`${input.file} already has this rule`);
-  writeFileSync(path, next);
-  await mustGit(["add", input.file], worktree);
-  const commit = await git(["commit", "-m", `chief: add ${input.file} rule from recipe ${input.recipeId}`], worktree);
-  if (commit.code !== 0) return blocked(`commit rejected by the repo's hooks: ${tail(`${commit.stdout}\n${commit.stderr}`.trim(), 400)}`);
+  if (next === undefined && head === base) return blocked(`${input.file} already has this rule`);
+  if (next !== undefined) {
+    writeFileSync(path, next);
+    await mustGit(["add", input.file], worktree);
+    const rejected = await commitWithConventionalMessage(worktree, input.file, input.recipeId);
+    if (rejected) return blocked(`commit rejected by the repo's hooks: ${tail(rejected, 400)}`);
+  }
 
   const summary = `Adds one line under "## Chief recipes" in ${input.file}.`;
   const outcome: Outcome = { status: "pass", summary, blast: "green", rounds: 0, branch, worktree, findings: [] };
