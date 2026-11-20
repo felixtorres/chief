@@ -542,7 +542,7 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     log(`[${input.id}] opening draft PR`);
     const approvedHead = await mustGit(["rev-parse", "HEAD"], worktree);
     try {
-      await pushBranch(worktree, branch);
+      await pushBranch(worktree, branch, input.repo.pushEnv);
       const pr = await createDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
       runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${plural(rounds, "round")}.` });
       return {
@@ -605,7 +605,7 @@ export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => 
     `Delete the line from \`${input.file}\` (or revert this PR's merge commit).`,
   ].join("\n");
   try {
-    await pushBranch(worktree, branch);
+    await pushBranch(worktree, branch, input.repo.pushEnv);
     const pushedHead = await mustGit(["rev-parse", "HEAD"], worktree);
     const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, description);
     return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead };

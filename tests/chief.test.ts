@@ -149,6 +149,33 @@ describe("config + digest", () => {
   });
 });
 
+describe("pushEnv", () => {
+  it("parses per-repo push environment and rejects non-string values", () => {
+    const cfg = parseConfig({ boardPath: "/b", repos: { a: { path: "/a", pushEnv: { LEFTHOOK_EXCLUDE: "test-affected" } }, b: { path: "/b" } } });
+    expect(cfg.repos.a!.pushEnv).toEqual({ LEFTHOOK_EXCLUDE: "test-affected" });
+    expect(cfg.repos.b!.pushEnv).toEqual({});
+    expect(() => parseConfig({ boardPath: "/b", repos: { a: { path: "/a", pushEnv: { X: 1 } } } })).toThrow(/pushEnv/);
+  });
+
+  it("hands the push environment to git hooks", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { chmodSync, mkdirSync } = await import("node:fs");
+    const { pushBranch } = await import("../src/ado.js");
+    const root = tmp();
+    const repo = makeRepo(root);
+    const remote = join(root, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", remote]);
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+    g("remote", "add", "origin", remote);
+    mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+    const hook = join(repo, ".git", "hooks", "pre-push");
+    writeFileSync(hook, '#!/bin/sh\n[ "$LEFTHOOK_EXCLUDE" = "test-affected" ] || { echo "🥊 test-affected (1.00 seconds)"; exit 1; }\n');
+    chmodSync(hook, 0o755);
+    await expect(pushBranch(repo, "main")).rejects.toThrow(/pre-push hook stopped it; failed step: test-affected/);
+    await expect(pushBranch(repo, "main", { LEFTHOOK_EXCLUDE: "test-affected" })).resolves.toBeUndefined();
+  });
+});
+
 describe("pushError", () => {
   it("drops the SSH banner and names the failed hook step and test", async () => {
     const { pushError } = await import("../src/ado.js");

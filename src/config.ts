@@ -14,6 +14,11 @@ export interface RepoConfig {
   allowedTools: string[];
   /** Per-repo Azure DevOps org/project; falls back to the top-level "ado". */
   ado: { org?: string; project?: string };
+  /**
+   * Extra environment for Chief's `git push`, e.g. { "LEFTHOOK_EXCLUDE": "test-affected" } to
+   * skip a pre-push hook step that only repeats the tests Chief's own checks already ran.
+   */
+  pushEnv: Record<string, string>;
 }
 
 export interface Lanes {
@@ -157,6 +162,14 @@ function num(v: unknown, key: string, fallback: number): number {
   return v;
 }
 
+function strMap(v: unknown, key: string): Record<string, string> {
+  if (v === undefined || v === null) return {};
+  if (typeof v !== "object" || Array.isArray(v) || !Object.values(v).every((x) => typeof x === "string")) {
+    throw new ConfigError(`config: "${key}" must be an object of string values`);
+  }
+  return { ...(v as Record<string, string>) };
+}
+
 function strList(v: unknown, key: string, fallback: string[]): string[] {
   if (v === undefined || v === null) return fallback;
   if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
@@ -220,6 +233,7 @@ export function parseConfig(raw: unknown, baseDir?: string): Config {
       adoRepository: str(rr.adoRepository, `repos.${name}.adoRepository`, name),
       allowedTools: strList(rr.allowedTools, `repos.${name}.allowedTools`, []),
       ado: adoSettings(rr.ado, `repos.${name}.ado`),
+      pushEnv: strMap(rr.pushEnv, `repos.${name}.pushEnv`),
     };
   }
 

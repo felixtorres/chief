@@ -70,7 +70,9 @@ tail -f ~/Library/Logs/chief/chief.log
       "testCmd": "npm test",                       // Chief runs this; the worker may too
       "lintCmd": "npm run lint",
       "adoRepository": "my-service",               // ADO repo name, if different from the key
-      "allowedTools": ["Bash(npm run build:*)"]    // extra commands the worker may run here
+      "allowedTools": ["Bash(npm run build:*)"],   // extra commands the worker may run here
+      "pushEnv": { "LEFTHOOK_EXCLUDE": "test-affected" } // optional env for Chief's git push, e.g. skip a
+                                                   // pre-push hook step that repeats Chief's own checks
     }
   },
   "ado": { "org": "https://dev.azure.com/your-org", "project": "YourProject" },

@@ -20,8 +20,10 @@ function orgArgs(cfg: Config, repo: RepoConfig): string[] {
   return args;
 }
 
-export async function pushBranch(worktree: string, branch: string): Promise<void> {
-  const r = await git(["push", "-u", "origin", branch], worktree);
+export async function pushBranch(worktree: string, branch: string, env: Record<string, string> = {}): Promise<void> {
+  const r = Object.keys(env).length
+    ? await run("git", ["push", "-u", "origin", branch], { cwd: worktree, env: { ...process.env, ...env } })
+    : await git(["push", "-u", "origin", branch], worktree);
   if (r.code !== 0) throw new AdoError(`git push failed: ${pushError(`${r.stdout}\n${r.stderr}`)}`);
 }
 
