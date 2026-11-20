@@ -286,6 +286,20 @@ describe("#base/ tag", () => {
     expect((await git(["merge-base", "--is-ancestor", firstHead, "HEAD"], third.worktree!)).code).toBe(0);
   });
 
+  it("keeps a stacked card waiting in Ready while its base card is blocked or hasn't run", async () => {
+    const { cfg, chief, state } = setup({ Backlog: ["Base card #chief-aaaaaa"], Ready: ["Stacked #base/chief-aaaaaa", "Independent"] });
+    await chief.tick();
+    let ready = readBoard(cfg.boardPath).lane("Ready")!.cards;
+    expect(ready.map((c) => c.cleanTitle)).toEqual(["Stacked"]);
+    expect(ready[0]!.status).toContain("waiting for #chief-aaaaaa to run first");
+    expect(state.byStatus("pass").map((r) => r.title)).toEqual(["Independent"]);
+
+    state.upsert({ id: "aaaaaa", title: "Base card", repo: "demo", status: "blocked", reason: "x" });
+    await chief.tick();
+    ready = readBoard(cfg.boardPath).lane("Ready")!.cards;
+    expect(ready[0]!.status).toContain("which is blocked");
+  });
+
   it("blocks when #base/ names a card Chief has no branch for, or a missing branch", async () => {
     const { cfg, chief } = setup({ Ready: ["Stacked #base/chief-abcdef", "Missing base #base/feature/nope"] });
     await chief.tick();

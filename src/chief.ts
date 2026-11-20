@@ -122,7 +122,15 @@ export class Chief {
           .flatMap((l) => l?.cards ?? [])
           .find((c) => c.id === selector || c.cleanTitle.toLowerCase().includes(needle));
       } else {
-        card = board.lane(lanes.ready)?.cards.find((c) => !c.checked);
+        // A card stacked on a card that is blocked or hasn't run yet waits in Ready, so it
+        // never builds on half-done work. Chief takes the next card instead.
+        const onBoard = (id: string) => board.lanes.some((l) => l.cards.some((c) => c.id === id));
+        card = board.lane(lanes.ready)?.cards.find((c) => {
+          if (c.checked) return false;
+          const wait = this.baseWait(c.base, c.id, onBoard);
+          if (wait && !c.status.startsWith(`⏳ ${wait}`)) c.setStatus(`⏳ ${wait}`);
+          return !wait;
+        });
       }
       if (!card) return undefined;
 
@@ -151,6 +159,17 @@ export class Chief {
       }
       return claimed;
     });
+  }
+
+  /** Why a card stacked with #base/chief-<id> must wait, or undefined when it can start. */
+  private baseWait(tag: string | undefined, self: string | undefined, onBoard: (id: string) => boolean): string | undefined {
+    const ref = tag ? /^chief-([0-9a-f]{6})$/.exec(tag) : null;
+    if (!ref || ref[1] === self) return undefined;
+    const run = this.state.get(ref[1]!);
+    if (!run) return onBoard(ref[1]!) ? `waiting for #chief-${ref[1]} to run first` : undefined;
+    if (run.status === "blocked") return `waiting for #chief-${ref[1]}, which is blocked`;
+    if (run.status === "cooking") return `waiting for #chief-${ref[1]} to finish`;
+    return undefined;
   }
 
   /** #base/chief-<id> means "on top of that card's branch"; anything else is a branch name. */
