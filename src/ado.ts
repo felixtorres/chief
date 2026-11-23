@@ -96,6 +96,87 @@ export async function createDraftPr(
   return { id: data.pullRequestId, url: web ? `${web}/pullrequest/${data.pullRequestId}` : "" };
 }
 
+/**
+ * The active PR from `branch` into `target`, if there is one. Azure DevOps allows only one
+ * active PR per source and target, so a card rerun after Pass must update it, not create
+ * another. Undefined when there is none or the lookup failed (then create runs as before).
+ */
+export async function findActivePr(
+  cfg: Config,
+  repo: RepoConfig,
+  worktree: string,
+  branch: string,
+  target: string,
+): Promise<{ id: number; url: string } | undefined> {
+  const args = [
+    "repos", "pr", "list",
+    "--source-branch", branch,
+    "--target-branch", target,
+    "--repository", repo.adoRepository,
+    "--status", "active",
+    "--output", "json",
+    ...orgArgs(cfg, repo),
+  ];
+  const r = await az(cfg, args, { cwd: worktree, timeoutMs: 60_000 });
+  if (r.code !== 0) return undefined;
+  try {
+    const list = JSON.parse(r.stdout) as Array<{
+      pullRequestId?: number;
+      repository?: { webUrl?: string; name?: string; project?: { name?: string } };
+    }>;
+    const pr = Array.isArray(list) ? list.find((p) => p.pullRequestId) : undefined;
+    if (!pr?.pullRequestId) return undefined;
+    // `pr list` leaves out repository.webUrl (`pr create` and `pr show` include it), so
+    // build the same <org>/<project>/_git/<repo> address from the fields it does return.
+    const { org } = adoFor(cfg, repo);
+    const repoName = pr.repository?.name;
+    const project = pr.repository?.project?.name;
+    const web =
+      pr.repository?.webUrl ??
+      (org && project && repoName ? `${org.replace(/\/+$/, "")}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repoName)}` : "");
+    return { id: pr.pullRequestId, url: web ? `${web}/pullrequest/${pr.pullRequestId}` : "" };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Replace an existing PR's title and description (its commits come from the push). */
+export async function updatePr(cfg: Config, repo: RepoConfig, worktree: string, id: number, title: string, description: string): Promise<void> {
+  const { org } = adoFor(cfg, repo);
+  const args = [
+    "repos", "pr", "update",
+    "--id", String(id),
+    "--title", title.slice(0, 400),
+    "--description", ...fitDescription(description).split("\n").map((l) => (l === "" ? " " : l)),
+    "--output", "json",
+    ...(org ? ["--org", org] : []),
+  ];
+  const r = await az(cfg, args, { cwd: worktree, timeoutMs: 120_000 });
+  if (r.code !== 0) throw new AdoError(`az repos pr update failed: ${tail(r.stderr || r.stdout, 500)}`);
+}
+
+/**
+ * Open a draft PR for `branch`, or update the one already open for it. The caller has pushed.
+ * `updated` says which happened.
+ */
+export async function openOrUpdateDraftPr(
+  cfg: Config,
+  repo: RepoConfig,
+  worktree: string,
+  branch: string,
+  target: string,
+  title: string,
+  description: string | ((updating: boolean) => string),
+): Promise<{ id: number; url: string; updated: boolean }> {
+  const text = (updating: boolean) => (typeof description === "function" ? description(updating) : description);
+  const open = await findActivePr(cfg, repo, worktree, branch, target);
+  if (open) {
+    await updatePr(cfg, repo, worktree, open.id, title, text(true));
+    return { ...open, updated: true };
+  }
+  return { ...(await createDraftPr(cfg, repo, worktree, branch, target, title, text(false))), updated: false };
+}
+
 export interface PrDetails {
   /** "active" | "completed" | "abandoned" */
   status: string;

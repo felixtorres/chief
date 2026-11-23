@@ -53,7 +53,7 @@ export function logLink(id: string): string {
 
 export function passStatus(o: Outcome, id: string): string {
   const blast = o.blast ? `${BLAST_ICON[o.blast]} ${o.blast}` : "";
-  const where = o.prUrl ? `[PR !${o.prId}](${o.prUrl})` : `branch \`${o.branch}\``;
+  const where = o.prUrl ? `[PR !${o.prId}](${o.prUrl})${o.prUpdated ? " updated" : ""}` : `branch \`${o.branch}\``;
   const parts = [`🔍 ${blast}`.trim(), where, `${o.rounds} round${o.rounds === 1 ? "" : "s"}`];
   if (o.runLog) parts.push(logLink(id));
   return parts.join(" · ");
@@ -217,7 +217,12 @@ export class Chief {
       };
     }
     const prev = this.state.get(c.id);
-    const previous = prev?.status === "blocked" ? { reason: prev.reason, approved: prev.approved } : undefined;
+    const previous =
+      prev?.status === "blocked"
+        ? { reason: prev.reason, approved: prev.approved, ...(prev.prId ? { pr: { id: prev.prId, url: prev.prUrl } } : {}) }
+        : prev?.status === "pass" && prev.prId
+          ? { pr: { id: prev.prId, url: prev.prUrl } }
+          : undefined;
     this.state.upsert({ id: c.id, title: c.title, repo: repo.name, status: "cooking", rounds: 0, reason: undefined });
     this.log(`[${c.id}] cooking "${c.title}" in ${repo.name}`);
 
@@ -260,7 +265,7 @@ export class Chief {
       this.moveCard(c.id, this.cfg.lanes.pass, passStatus(outcome, c.id));
       await this.send(this.cfg, {
         title: `Ready at the pass: ${c.title}`,
-        body: `${outcome.blast ?? "?"} blast radius, ${outcome.rounds} round(s). ${outcome.prUrl ? "Draft PR opened." : `Branch ${outcome.branch}.`}`,
+        body: `${outcome.blast ?? "?"} blast radius, ${outcome.rounds} round(s). ${outcome.prUrl ? (outcome.prUpdated ? "Draft PR updated." : "Draft PR opened.") : `Branch ${outcome.branch}.`}`,
         url: outcome.prUrl,
       });
     } else {

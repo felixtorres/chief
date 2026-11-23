@@ -9,7 +9,7 @@ import type { Note } from "../src/notify.js";
 import { appendDigest } from "../src/notify.js";
 import { readLedger } from "../src/ledger.js";
 import { StateStore } from "../src/state.js";
-import { makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
+import { fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
 const STARTER = readFileSync(new URL("../templates/board.example.md", import.meta.url), "utf8");
 
@@ -107,6 +107,21 @@ describe("Chief.tick", () => {
     const { cfg, chief } = setup({ Ready: ["x"] });
     writeFileSync(cfg.boardPath, readFileSync(cfg.boardPath, "utf8").replace("## Blocked", "## Parking"));
     await expect(chief.tick()).rejects.toThrow(/missing the "Blocked" lane/);
+  });
+});
+
+describe("rerunning a card that reached the pass", () => {
+  it("tells the worker about the card's open PR", async () => {
+    const { chief, state } = setup({ Ready: ["Add feature file #chief-abc123"] });
+    state.upsert({ id: "abc123", title: "Add feature file", repo: "demo", status: "pass", rounds: 1, prId: 77, prUrl: "https://ado.test/_git/demo/pullrequest/77" });
+    await chief.tick();
+    expect(fakeCalls()[0]!.prompt).toMatch(/draft PR !77 is open for this branch/);
+  });
+
+  it("marks an updated PR on the card", async () => {
+    const { passStatus } = await import("../src/chief.js");
+    const o = { status: "pass", summary: "", rounds: 2, branch: "b", worktree: "w", blast: "green", prId: 77, prUrl: "https://x/77", prUpdated: true } as const;
+    expect(passStatus(o, "abc123")).toBe("🔍 🟢 green · [PR !77](https://x/77) updated · 2 rounds");
   });
 });
 

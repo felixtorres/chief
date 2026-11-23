@@ -43,12 +43,18 @@ export interface Brief {
   notes: string[];
   repo: RepoConfig;
   /** What the last attempt of this card left behind, so a retry doesn't start blind. */
-  previous?: { reason?: string; commits: string[] };
+  previous?: { reason?: string; commits: string[]; prId?: number };
 }
 
 function previousSection(p: Brief["previous"]): string {
-  if (!p || (!p.reason && !p.commits.length)) return "";
+  if (!p || (!p.reason && !p.commits.length && !p.prId)) return "";
   const lines = ["", "PREVIOUS ATTEMPT (this card was tried before):"];
+  if (p.prId) {
+    lines.push(
+      `- It reached the pass: draft PR !${p.prId} is open for this branch, and your new commits will go into that same PR.`,
+      "- The card was moved back to Ready, so its text may have changed since. Do what the card says now, building on the commits below.",
+    );
+  }
   if (p.reason) lines.push(`- It stopped because: ${p.reason.replace(/\s+/g, " ").slice(0, 600)}`);
   if (p.commits.length) {
     lines.push("- Your branch already has these commits from it (newest first):", ...p.commits.map((c) => `  - ${c}`));

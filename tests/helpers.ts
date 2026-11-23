@@ -77,6 +77,25 @@ export function resetFakeEnv(): void {
   delete process.env.FAKE_DENY;
   delete process.env.FAKE_REFLECT;
   delete process.env.FAKE_AZ_PR;
+  delete process.env.FAKE_AZ_ACTIVE;
   delete process.env.FAKE_SECOND_RESULT;
   delete process.env.FAKE_TRIAGE;
+}
+
+/** Give `repo` a bare `origin` so Chief's push succeeds. */
+export function addOrigin(root: string, repo: string): string {
+  const remote = join(root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", remote]);
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: repo });
+  return remote;
+}
+
+/** Each fake `az` call's argv, oldest first. */
+export function azCalls(): string[][] {
+  const file = join(process.env.FAKE_STATE!, "az.jsonl");
+  try {
+    return readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => (JSON.parse(l) as { args: string[] }).args);
+  } catch {
+    return [];
+  }
 }

@@ -6,7 +6,7 @@ import { buildClaudeArgs } from "../src/claude.js";
 import { parseConfig } from "../src/config.js";
 import { briefFeedback, cook, failureSignature, isRuleFile, newFailures, parseReview, readableOutput, slugify, workerTools } from "../src/pipeline.js";
 import { RunLog, tildify } from "../src/trace.js";
-import { fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
+import { addOrigin, azCalls, fakeCalls, makeConfig, makeRepo, resetFakeEnv, tmp } from "./helpers.js";
 
 function setup(overrides: Record<string, unknown> = {}) {
   const root = tmp();
@@ -338,6 +338,53 @@ describe("retries and fix rounds", () => {
     expect(second.reason).toMatch(/PR step failed/);
     expect(second.approved?.head).toBe(first.approved!.head);
     expect(readFileSync(second.runLog!, "utf8")).toMatch(/skips straight to the PR/);
+  });
+
+  it("opens a draft PR when none is open for the branch", async () => {
+    const { cfg, input, root, repo } = setup({ openPr: true });
+    addOrigin(root, repo);
+    const out = await cook(cfg, input);
+    expect(out).toMatchObject({ status: "pass", prId: 101, prUrl: "https://ado.test/_git/demo/pullrequest/101" });
+    expect(out.prUpdated).toBeUndefined();
+    const verbs = azCalls().map((a) => a[2]);
+    expect(verbs).toEqual(["list", "create"]);
+    const list = azCalls()[0]!;
+    expect(list).toEqual(expect.arrayContaining(["--source-branch", out.branch, "--target-branch", "main", "--status", "active"]));
+    expect(readFileSync(out.runLog!, "utf8")).toMatch(/Draft PR \[!101\]\([^)]+\) opened after 1 round/);
+  });
+
+  it("updates the PR already open for the branch instead of creating another", async () => {
+    const { cfg, input, root, repo } = setup({ openPr: true });
+    addOrigin(root, repo);
+    process.env.FAKE_AZ_ACTIVE = JSON.stringify([{ pullRequestId: 77, repository: { webUrl: "https://ado.test/_git/demo" } }]);
+    const out = await cook(cfg, input);
+    expect(out).toMatchObject({ status: "pass", prId: 77, prUrl: "https://ado.test/_git/demo/pullrequest/77", prUpdated: true });
+    const calls = azCalls();
+    expect(calls.map((a) => a[2])).toEqual(["list", "update"]);
+    const update = calls[1]!;
+    expect(update.slice(update.indexOf("--id"), update.indexOf("--id") + 2)).toEqual(["--id", "77"]);
+    const description = update.slice(update.indexOf("--description") + 1, update.indexOf("--output")).join("\n");
+    expect(description).toMatch(/## Updated/);
+    expect(description).toMatch(/Commits added by that attempt[^\n]*\n- [0-9a-f]+ chief: Add feature file/);
+    expect(readFileSync(out.runLog!, "utf8")).toMatch(/Draft PR \[!77\]\([^)]+\) updated \(it was already open for this branch\)/);
+  });
+
+  it("builds the PR link from pr list's project and repo name, which has no webUrl", async () => {
+    const { cfg, input, root, repo } = setup({ openPr: true, ado: { org: "https://dev.azure.com/cbre/" } });
+    addOrigin(root, repo);
+    // The shape `az repos pr list` really returns: no repository.webUrl.
+    process.env.FAKE_AZ_ACTIVE = JSON.stringify([{ pullRequestId: 77, repository: { name: "demo repo", project: { name: "Vantage Analytics" } } }]);
+    const out = await cook(cfg, input);
+    expect(out).toMatchObject({ prId: 77, prUpdated: true, prUrl: "https://dev.azure.com/cbre/Vantage%20Analytics/_git/demo%20repo/pullrequest/77" });
+  });
+
+  it("tells the worker when the card's PR is already open", async () => {
+    const { cfg, input } = setup();
+    await cook(cfg, { ...input, previous: { pr: { id: 77 } } });
+    const prompt = fakeCalls()[0]!.prompt;
+    expect(prompt).toMatch(/draft PR !77 is open for this branch/);
+    expect(prompt).toMatch(/Do what the card says now/);
+    expect(prompt).not.toMatch(/It stopped because/);
   });
 
   it("rebases a retried card onto the target when the target has moved on", async () => {

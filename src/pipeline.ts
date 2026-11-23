@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { createDraftPr, pushBranch } from "./ado.js";
+import { openOrUpdateDraftPr, pushBranch } from "./ado.js";
 import { categorize, type BlockCategory } from "./ledger.js";
 import { callClaude } from "./claude.js";
 import type { Config, RepoConfig } from "./config.js";
@@ -19,8 +19,8 @@ export interface CookInput {
   repo: RepoConfig;
   /** Branch to start from and open the PR against; defaults to repo.defaultBranch. */
   base?: string;
-  /** The last attempt of this card, when it ended Blocked. */
-  previous?: { reason?: string; approved?: ApprovedWork };
+  /** The last attempt of this card, when it ended Blocked, or at the Pass (then `pr` is its PR). */
+  previous?: { reason?: string; approved?: ApprovedWork; pr?: { id: number; url?: string } };
 }
 
 /** The branch a card starts from and its PR targets. */
@@ -50,6 +50,8 @@ export interface Outcome {
   pushedHead?: string;
   /** Approved work whose PR step failed; the next attempt skips straight to the PR. */
   approved?: ApprovedWork;
+  /** The PR was already open for this branch and this attempt updated it. */
+  prUpdated?: boolean;
 }
 
 export interface Review {
@@ -332,9 +334,17 @@ async function review(cfg: Config, input: CookInput, worktree: string, base: str
   return rev;
 }
 
-function prDescription(input: CookInput, summary: string, checks: string, rev: Review, rounds: number, activity: string): string {
+function prDescription(input: CookInput, summary: string, checks: string, rev: Review, rounds: number, activity: string, update?: string[]): string {
   return [
     `Automated by Chief (card \`#chief-${input.id}\`, ${rounds} round${rounds === 1 ? "" : "s"}).`,
+    ...(update
+      ? [
+          "",
+          "## Updated",
+          `Chief reran this card on ${new Date().toISOString().slice(0, 10)} and updated this PR instead of opening another. The sections below describe the latest attempt.`,
+          ...(update.length ? ["", "Commits added by that attempt (newest first):", ...update.map((c) => `- ${c}`)] : ["", "That attempt added no new commits."]),
+        ]
+      : []),
     ...(input.base ? ["", `Stacked on \`${input.base}\`: this PR targets that branch, so it shows only this card's changes. Once that branch merges, retarget this PR to \`${input.repo.defaultBranch}\`.`] : []),
     "",
     "## Summary",
@@ -364,7 +374,10 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     title: input.title,
     notes: input.notes,
     repo: input.repo,
-    previous: input.previous?.reason || commits.length ? { reason: input.previous?.reason, commits } : undefined,
+    previous:
+      input.previous?.reason || input.previous?.pr || commits.length
+        ? { reason: input.previous?.reason, commits, ...(input.previous?.pr ? { prId: input.previous.pr.id } : {}) }
+        : undefined,
   };
   const runLog = new RunLog(cfg, { id: input.id, title: input.title, repo: input.repo.name }, branch);
   if (refreshed) {
@@ -543,11 +556,16 @@ export async function cook(cfg: Config, input: CookInput, log: Log = () => {}): 
     const approvedHead = await mustGit(["rev-parse", "HEAD"], worktree);
     try {
       await pushBranch(worktree, branch, input.repo.pushEnv);
-      const pr = await createDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, prDescription(input, summary, checks, approved, rounds, runLog.activity()));
-      runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) opened after ${plural(rounds, "round")}.` });
+      const added = (await mustGit(["log", "--oneline", "-n", "20", `${head}..HEAD`], worktree)).split("\n").filter(Boolean);
+      const pr = await openOrUpdateDraftPr(cfg, input.repo, worktree, branch, targetBranch(input), input.title, (updating) =>
+        prDescription(input, summary, checks, approved, rounds, runLog.activity(), updating ? added : undefined),
+      );
+      const verb = pr.updated ? "updated (it was already open for this branch)" : "opened";
+      runLog.add({ kind: "outcome", status: "pass", text: `Draft PR [!${pr.id}](${pr.url}) ${verb} after ${plural(rounds, "round")}.` });
       return {
         status: "pass", summary, blast: approved.blast, findings: approved.findings, rounds, branch, worktree, runLog: runLog.path,
         metrics: runLog.metrics(), ruleFiles: approved.ruleFiles, prId: pr.id, prUrl: pr.url, pushedHead: approvedHead,
+        ...(pr.updated ? { prUpdated: true } : {}),
       };
     } catch (err) {
       return {
@@ -630,8 +648,8 @@ export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => 
   try {
     await pushBranch(worktree, branch, input.repo.pushEnv);
     const pushedHead = await mustGit(["rev-parse", "HEAD"], worktree);
-    const pr = await createDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, description);
-    return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead };
+    const pr = await openOrUpdateDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, description);
+    return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead, ...(pr.updated ? { prUpdated: true } : {}) };
   } catch (err) {
     return blocked(`rule is committed on branch ${branch} but the PR step failed: ${(err as Error).message}`);
   }
