@@ -387,6 +387,49 @@ describe("retries and fix rounds", () => {
     expect(prompt).not.toMatch(/It stopped because/);
   });
 
+  it("starts from the last fetched origin base when the fetch fails and the local base is behind", async () => {
+    const { cfg, input, root, repo } = setup({ fetchBeforeBranch: true });
+    const remote = addOrigin(root, repo);
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString().trim();
+    g("checkout", "-q", "-b", "stack-base");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    g("add", "a.txt");
+    g("commit", "-q", "-m", "A");
+    const a = g("rev-parse", "HEAD");
+    writeFileSync(join(repo, "b.txt"), "b\n");
+    g("add", "b.txt");
+    g("commit", "-q", "-m", "B (merged into the base on origin)");
+    g("push", "-q", "-u", "origin", "stack-base");
+    // Like ENT-1's branch on 2026-11-24: origin has moved on, the local branch is where Chief left it.
+    g("checkout", "-q", "main");
+    g("branch", "-f", "stack-base", a);
+    // And this time the fetch fails.
+    g("remote", "set-url", "origin", join(remote, "gone.git"));
+    const out = await cook(cfg, { ...input, base: "stack-base" });
+    const wt = (...args: string[]) => execFileSync("git", args, { cwd: out.worktree, stdio: "pipe" }).toString().trim();
+    expect(wt("log", "--format=%s")).toContain("B (merged into the base on origin)");
+    const log = readFileSync(out.runLog!, "utf8");
+    expect(log).toMatch(/Couldn't fetch stack-base from origin/);
+    expect(log).toMatch(/Started from the last fetched origin\/stack-base instead/);
+  });
+
+  it("keeps a local base that has commits origin doesn't, and says so", async () => {
+    const { cfg, input, root, repo } = setup({ fetchBeforeBranch: true });
+    const remote = addOrigin(root, repo);
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString().trim();
+    g("checkout", "-q", "-b", "stack-base");
+    g("push", "-q", "-u", "origin", "stack-base");
+    writeFileSync(join(repo, "local.txt"), "local only\n");
+    g("add", "local.txt");
+    g("commit", "-q", "-m", "local only");
+    g("checkout", "-q", "main");
+    g("remote", "set-url", "origin", join(remote, "gone.git"));
+    const out = await cook(cfg, { ...input, base: "stack-base" });
+    const wt = (...args: string[]) => execFileSync("git", args, { cwd: out.worktree, stdio: "pipe" }).toString().trim();
+    expect(wt("log", "--format=%s")).toContain("local only");
+    expect(readFileSync(out.runLog!, "utf8")).toMatch(/Started from the local stack-base, which has commits origin\/stack-base doesn't/);
+  });
+
   it("rebases a retried card onto the target when the target has moved on", async () => {
     const { cfg, input, repo } = setup();
     const first = await cook(cfg, input);

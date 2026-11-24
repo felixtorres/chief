@@ -113,9 +113,26 @@ export async function prepareWorktree(
   const worktree = join(cfg.worktreesDir, `${repo.name}-${id}`);
   const target = targetBranch(input);
   let baseRef = target;
+  const notes: string[] = [];
   if (cfg.fetchBeforeBranch) {
     const fetched = await git(["fetch", "origin", target], repo.path);
     if (fetched.code === 0) baseRef = `origin/${target}`;
+    else {
+      notes.push(`Couldn't fetch ${target} from origin (${oneLineErr(fetched.stderr || fetched.stdout)}).`);
+      // Without a fresh fetch, the local branch can be far older than what was last fetched:
+      // a base card's own branch is left where Chief first made it, while its stacked PRs
+      // merge into origin's copy. Take the last fetched origin/<target> whenever the local
+      // branch is missing or behind it (2026-11-24: ENT-16 started from a Nov 16 commit).
+      const remote = `origin/${target}`;
+      const commit = async (ref: string) => (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo.path)).code === 0;
+      if (await commit(remote)) {
+        const localBehind = !(await commit(target)) || (await git(["merge-base", "--is-ancestor", target, remote], repo.path)).code === 0;
+        if (localBehind) {
+          baseRef = remote;
+          notes.push(`Started from the last fetched ${remote} instead.`);
+        } else notes.push(`Started from the local ${target}, which has commits ${remote} doesn't.`);
+      }
+    }
   }
   if ((await git(["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`], repo.path)).code !== 0) {
     throw new Error(`base branch "${target}" was not found on origin or locally in ${repo.name}`);
@@ -125,9 +142,10 @@ export async function prepareWorktree(
     const exists = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo.path)).code === 0;
     await mustGit(exists ? ["worktree", "add", worktree, branch] : ["worktree", "add", "-b", branch, worktree, baseRef], repo.path);
   }
-  const refreshed = await refreshBranch(worktree, branch, baseRef);
+  const moved = await refreshBranch(worktree, branch, baseRef);
+  if (moved) notes.push(moved);
   const base = await mustGit(["merge-base", "HEAD", baseRef], worktree);
-  return { branch, worktree, base, refreshed };
+  return { branch, worktree, base, ...(notes.length ? { refreshed: notes.join(" ") } : {}) };
 }
 
 /**
@@ -596,15 +614,42 @@ export interface RuleInput {
  * conventional type plus a scope from its own list), so try the common shapes in turn and
  * keep the first the hooks accept. Returns undefined on success, else the last hook output.
  */
-async function commitWithConventionalMessage(worktree: string, file: string, recipeId: string): Promise<string | undefined> {
+/**
+ * A commit hook that could not run at all, as opposed to one that ran and said no: its
+ * command is missing. A recipe worktree has no installed dependencies (only a worker's
+ * test run installs them), so a hook like nex-ts's `./node_modules/.bin/turbo run
+ * typecheck` fails this way on every recipe.
+ */
+export function hookCouldNotRun(output: string): boolean {
+  return /command not found|No such file or directory|exit status 127|ENOENT/i.test(output);
+}
+
+/**
+ * Commit the recipe's one-line rule. Tries messages a commit-msg hook (commitlint) may
+ * accept, most specific first. When a hook could not run (hookCouldNotRun), commits once
+ * more without hooks and says so: the change is one line in a rule file, and skipping a
+ * hook that never ran checks nothing less. A hook that ran and refused still blocks.
+ */
+async function commitWithConventionalMessage(
+  worktree: string,
+  file: string,
+  recipeId: string,
+): Promise<{ rejected?: string; skippedHooks?: boolean }> {
   const what = `add ${file} rule from Chief recipe ${recipeId}`;
+  const messages = [`docs(repo): ${what}`, `docs: ${what}`, `chore: ${what}`, `chief: ${what}`];
   let last = "";
-  for (const message of [`docs(repo): ${what}`, `docs: ${what}`, `chore: ${what}`, `chief: ${what}`]) {
+  for (const message of messages) {
     const r = await git(["commit", "-m", message], worktree);
-    if (r.code === 0) return undefined;
+    if (r.code === 0) return {};
+    last = `${r.stdout}\n${r.stderr}`.trim();
+    if (hookCouldNotRun(last)) break;
+  }
+  if (hookCouldNotRun(last)) {
+    const r = await git(["commit", "--no-verify", "-m", messages[0]!], worktree);
+    if (r.code === 0) return { skippedHooks: true };
     last = `${r.stdout}\n${r.stderr}`.trim();
   }
-  return last;
+  return { rejected: last };
 }
 
 export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => {}): Promise<Outcome> {
@@ -619,14 +664,17 @@ export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => 
   const head = await mustGit(["rev-parse", "HEAD"], worktree);
   const next = addRuleLine(existsSync(path) ? readFileSync(path, "utf8") : undefined, input.file, input.text);
   if (next === undefined && head === base) return blocked(`${input.file} already has this rule`);
+  let skippedHooks = false;
   if (next !== undefined) {
     writeFileSync(path, next);
     await mustGit(["add", input.file], worktree);
-    const rejected = await commitWithConventionalMessage(worktree, input.file, input.recipeId);
-    if (rejected) return blocked(`commit rejected by the repo's hooks: ${tail(rejected, 400)}`);
+    const committed = await commitWithConventionalMessage(worktree, input.file, input.recipeId);
+    if (committed.rejected !== undefined) return blocked(`commit rejected by the repo's hooks: ${tail(committed.rejected, 400)}`);
+    skippedHooks = committed.skippedHooks === true;
+    if (skippedHooks) log(`[${input.id}] the repo's commit hooks could not run in the recipe worktree; committed without them`);
   }
 
-  const summary = `Adds one line under "## Chief recipes" in ${input.file}.`;
+  const summary = `Adds one line under "## Chief recipes" in ${input.file}.${skippedHooks ? " Committed without the repo's commit hooks, which could not run in Chief's recipe worktree." : ""}`;
   const outcome: Outcome = { status: "pass", summary, blast: "green", rounds: 0, branch, worktree, findings: [] };
   if (!cfg.openPr) return outcome;
   log(`[${input.id}] opening draft PR for recipe ${input.recipeId}`);
@@ -641,6 +689,13 @@ export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => 
     "",
     "## Evidence",
     ...input.evidence.map((e) => `- ${e}`),
+    ...(skippedHooks
+      ? [
+          "",
+          "## Hooks",
+          "The repo's commit hooks could not run in Chief's recipe worktree (its dependencies aren't installed there), so this one-line commit was made without them. The PR's own checks still run.",
+        ]
+      : []),
     "",
     "## How to revert",
     `Delete the line from \`${input.file}\` (or revert this PR's merge commit).`,

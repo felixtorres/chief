@@ -359,6 +359,41 @@ describe("approving and rejecting recipes", () => {
     rmSync(hook);
   });
 
+  it("commits without hooks only when a hook could not run, and still blocks on a hook that refused", async () => {
+    const { chmodSync, mkdirSync, rmSync } = await import("node:fs");
+    process.env.FAKE_REFLECT = reply(proposal());
+    const { cfg, chief, repo } = await bumpyRun();
+    const r = chief.recipes.all()[0]!;
+    mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+    const hook = join(repo, ".git", "hooks", "pre-commit");
+    // A hook that ran and said no: the recipe stays blocked, no --no-verify.
+    writeFileSync(hook, '#!/bin/sh\necho "✖ check-kits: kit drift"; exit 1\n');
+    chmodSync(hook, 0o755);
+    moveRecipe(cfg.boardPath, r.id, "Ready");
+    await chief.tick();
+    expect(chief.recipes.get(r.id)!.status).toBe("failed");
+    expect(readBoard(cfg.boardPath).lane("Blocked")!.cards.find((c) => c.recipe === r.id)!.status).toContain("kit drift");
+
+    // Like nex-ts in a recipe worktree: the hook's tool isn't installed, so the hook cannot run.
+    writeFileSync(hook, "#!/bin/sh\n./node_modules/.bin/turbo run typecheck\n");
+    moveRecipe(cfg.boardPath, r.id, "Ready");
+    await chief.tick();
+    expect(chief.recipes.get(r.id)!.status).toBe("applied");
+    const card = readBoard(cfg.boardPath).lane("Pass")!.cards.find((c) => c.recipe === r.id)!;
+    const branch = /`(chief\/[^`]+)`/.exec(card.status)![1]!;
+    expect(execFileSync("git", ["log", "-1", "--format=%s", branch], { cwd: repo }).toString()).toMatch(/^docs\(repo\): add REVIEW\.md rule/);
+    expect(execFileSync("git", ["rev-list", "--count", `main..${branch}`], { cwd: repo }).toString().trim()).toBe("1");
+    rmSync(hook);
+  });
+
+  it("tells a hook that could not run from one that refused", async () => {
+    const { hookCouldNotRun } = await import("../src/pipeline.js");
+    expect(hookCouldNotRun("sh: ./node_modules/.bin/turbo: No such file or directory\nexit status 127")).toBe(true);
+    expect(hookCouldNotRun("lefthook: biome: command not found")).toBe(true);
+    expect(hookCouldNotRun("✖ scope may not be empty [scope-empty]")).toBe(false);
+    expect(hookCouldNotRun("✖ check-kits: kit drift")).toBe(false);
+  });
+
   it("won't apply a recipe card twice", async () => {
     process.env.FAKE_REFLECT = reply(proposal());
     const { cfg, chief } = await bumpyRun();
