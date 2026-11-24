@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { openOrUpdateDraftPr, pushBranch } from "./ado.js";
+import { hookCouldNotRun, openOrUpdateDraftPr, pushBranch } from "./ado.js";
+
+export { hookCouldNotRun };
 import { categorize, type BlockCategory } from "./ledger.js";
 import { callClaude } from "./claude.js";
 import type { Config, RepoConfig } from "./config.js";
@@ -615,16 +617,6 @@ export interface RuleInput {
  * keep the first the hooks accept. Returns undefined on success, else the last hook output.
  */
 /**
- * A commit hook that could not run at all, as opposed to one that ran and said no: its
- * command is missing. A recipe worktree has no installed dependencies (only a worker's
- * test run installs them), so a hook like nex-ts's `./node_modules/.bin/turbo run
- * typecheck` fails this way on every recipe.
- */
-export function hookCouldNotRun(output: string): boolean {
-  return /command not found|No such file or directory|exit status 127|ENOENT/i.test(output);
-}
-
-/**
  * Commit the recipe's one-line rule. Tries messages a commit-msg hook (commitlint) may
  * accept, most specific first. When a hook could not run (hookCouldNotRun), commits once
  * more without hooks and says so: the change is one line in a rule file, and skipping a
@@ -701,9 +693,10 @@ export async function applyRule(cfg: Config, input: RuleInput, log: Log = () => 
     `Delete the line from \`${input.file}\` (or revert this PR's merge commit).`,
   ].join("\n");
   try {
-    await pushBranch(worktree, branch, input.repo.pushEnv);
+    const pushed = await pushBranch(worktree, branch, input.repo.pushEnv, { skipHooksThatCannotRun: true });
+    if (pushed.skippedHooks) log(`[${input.id}] the repo's pre-push hooks could not run in the recipe worktree; pushed without them`);
     const pushedHead = await mustGit(["rev-parse", "HEAD"], worktree);
-    const pr = await openOrUpdateDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, description);
+    const pr = await openOrUpdateDraftPr(cfg, input.repo, worktree, branch, input.repo.defaultBranch, `Chief recipe: ${input.text.slice(0, 80)}`, pushed.skippedHooks ? description.replace("## How to revert", "## Pre-push hooks\nThe repo's pre-push hooks could not run in Chief's recipe worktree either, so the branch was pushed without them.\n\n## How to revert") : description);
     return { ...outcome, prId: pr.id, prUrl: pr.url, pushedHead, ...(pr.updated ? { prUpdated: true } : {}) };
   } catch (err) {
     return blocked(`rule is committed on branch ${branch} but the PR step failed: ${(err as Error).message}`);

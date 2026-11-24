@@ -20,11 +20,37 @@ function orgArgs(cfg: Config, repo: RepoConfig): string[] {
   return args;
 }
 
-export async function pushBranch(worktree: string, branch: string, env: Record<string, string> = {}): Promise<void> {
-  const r = Object.keys(env).length
-    ? await run("git", ["push", "-u", "origin", branch], { cwd: worktree, env: { ...process.env, ...env } })
-    : await git(["push", "-u", "origin", branch], worktree);
-  if (r.code !== 0) throw new AdoError(`git push failed: ${pushError(`${r.stdout}\n${r.stderr}`)}`);
+/**
+ * A git hook that could not run at all, as opposed to one that ran and said no: its command
+ * is missing. A recipe worktree has no installed dependencies (only a worker's test run
+ * installs them), so hooks like nex-ts's `./node_modules/.bin/turbo run typecheck` or its
+ * design-lint eslint fail this way on every recipe.
+ */
+export function hookCouldNotRun(output: string): boolean {
+  return /command not found|No such file or directory|exit status 127|ENOENT/i.test(output);
+}
+
+/**
+ * Push the branch. With `skipHooksThatCannotRun` (recipes only), a push stopped by a hook
+ * that could not run is retried once with --no-verify; a hook that ran and refused still fails.
+ */
+export async function pushBranch(
+  worktree: string,
+  branch: string,
+  env: Record<string, string> = {},
+  opts: { skipHooksThatCannotRun?: boolean } = {},
+): Promise<{ skippedHooks: boolean }> {
+  const push = (extra: string[]) =>
+    Object.keys(env).length
+      ? run("git", ["push", ...extra, "-u", "origin", branch], { cwd: worktree, env: { ...process.env, ...env } })
+      : git(["push", ...extra, "-u", "origin", branch], worktree);
+  let r = await push([]);
+  if (r.code === 0) return { skippedHooks: false };
+  if (opts.skipHooksThatCannotRun && hookCouldNotRun(`${r.stdout}\n${r.stderr}`)) {
+    r = await push(["--no-verify"]);
+    if (r.code === 0) return { skippedHooks: true };
+  }
+  throw new AdoError(`git push failed: ${pushError(`${r.stdout}\n${r.stderr}`)}`);
 }
 
 /**

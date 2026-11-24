@@ -187,7 +187,29 @@ describe("pushEnv", () => {
     writeFileSync(hook, '#!/bin/sh\n[ "$LEFTHOOK_EXCLUDE" = "test-affected" ] || { echo "🥊 test-affected (1.00 seconds)"; exit 1; }\n');
     chmodSync(hook, 0o755);
     await expect(pushBranch(repo, "main")).rejects.toThrow(/pre-push hook stopped it; failed step: test-affected/);
-    await expect(pushBranch(repo, "main", { LEFTHOOK_EXCLUDE: "test-affected" })).resolves.toBeUndefined();
+    await expect(pushBranch(repo, "main", { LEFTHOOK_EXCLUDE: "test-affected" })).resolves.toEqual({ skippedHooks: false });
+  });
+
+  it("skips a pre-push hook only when asked and only when it could not run", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { chmodSync, mkdirSync } = await import("node:fs");
+    const { pushBranch } = await import("../src/ado.js");
+    const root = tmp();
+    const repo = makeRepo(root);
+    const remote = join(root, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", remote]);
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: repo, stdio: "pipe" });
+    mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+    const hook = join(repo, ".git", "hooks", "pre-push");
+    // Like nex-ts's design-lint in a recipe worktree: the tool isn't installed.
+    writeFileSync(hook, "#!/bin/sh\n./packages/kit/node_modules/.bin/eslint -c eslint.design.config.js .\n");
+    chmodSync(hook, 0o755);
+    await expect(pushBranch(repo, "main")).rejects.toThrow(/git push failed/);
+    await expect(pushBranch(repo, "main", {}, { skipHooksThatCannotRun: true })).resolves.toEqual({ skippedHooks: true });
+    // A hook that ran and refused is never skipped.
+    writeFileSync(hook, '#!/bin/sh\necho "🥊 design-lint (1.00 seconds)"; exit 1\n');
+    execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "more"], { cwd: repo, stdio: "pipe" });
+    await expect(pushBranch(repo, "main", {}, { skipHooksThatCannotRun: true })).rejects.toThrow(/failed step: design-lint/);
   });
 });
 
