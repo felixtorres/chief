@@ -213,6 +213,14 @@ describe("cook", () => {
     expect(second.worktree).toBe(first.worktree);
     expect(second.status).toBe("pass");
   });
+
+  it("keeps the first run's branch when the card is renamed before a rerun", async () => {
+    const { cfg, input } = setup();
+    const first = await cook(cfg, input);
+    const second = await cook(cfg, { ...input, title: "Withdraw the feature file instead" });
+    expect(second.branch).toBe(first.branch);
+    expect(second.status).toBe("pass");
+  });
 });
 
 describe("rule files", () => {

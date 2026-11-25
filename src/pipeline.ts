@@ -113,8 +113,12 @@ export async function prepareWorktree(
   input: Pick<CookInput, "id" | "title" | "repo" | "base" | "branch">,
 ): Promise<{ branch: string; worktree: string; base: string; refreshed?: string }> {
   const { repo, id, title } = input;
-  const branch = input.branch ?? `chief/${id}-${slugify(title)}`;
   const worktree = join(cfg.worktreesDir, `${repo.name}-${id}`);
+  // A rerun reuses the card's worktree, which stays on the branch its first run made. Name
+  // the branch from that, not from the title: a card renamed between runs would otherwise
+  // push a branch that doesn't exist (2026-11-25: ENT-8, retitled after it was blocked).
+  const current = existsSync(worktree) ? (await git(["branch", "--show-current"], worktree)).stdout.trim() : "";
+  const branch = input.branch ?? (current || `chief/${id}-${slugify(title)}`);
   const target = targetBranch(input);
   let baseRef = target;
   const notes: string[] = [];
