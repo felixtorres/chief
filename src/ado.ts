@@ -213,6 +213,41 @@ export interface PrDetails {
   closedDate?: string;
 }
 
+/**
+ * The newest human comment on the PR: what you wrote when abandoning it, if anything.
+ * Reads the PR's threads (`az devops invoke` on the Git pullRequestThreads resource; `az
+ * repos pr` has no thread command) and skips system comments (votes, status changes).
+ * Undefined when there is none, the project isn't configured, or the call fails.
+ */
+export async function prLastComment(cfg: Config, repo: RepoConfig, id: number): Promise<string | undefined> {
+  const { org, project } = adoFor(cfg, repo);
+  if (!project) return undefined;
+  const args = [
+    "devops", "invoke",
+    "--area", "git",
+    "--resource", "pullRequestThreads",
+    "--route-parameters", `project=${project}`, `repositoryId=${repo.adoRepository}`, `pullRequestId=${id}`,
+    "--api-version", "7.1",
+    "--output", "json",
+    ...(org ? ["--org", org] : []),
+  ];
+  const r = await az(cfg, args, { cwd: repo.path, timeoutMs: 60_000 });
+  if (r.code !== 0) return undefined;
+  try {
+    const data = JSON.parse(r.stdout) as {
+      value?: Array<{ comments?: Array<{ content?: string; commentType?: string; publishedDate?: string; isDeleted?: boolean }> }>;
+    };
+    const comments = (data.value ?? [])
+      .flatMap((t) => t.comments ?? [])
+      .filter((c) => c.commentType === "text" && !c.isDeleted && typeof c.content === "string" && c.content.trim() !== "");
+    comments.sort((a, b) => (a.publishedDate ?? "").localeCompare(b.publishedDate ?? ""));
+    const last = comments.at(-1)?.content?.replace(/\s+/g, " ").trim();
+    return last ? (last.length > 500 ? `${last.slice(0, 499)}…` : last) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The PR's status and final commits, or undefined if Azure DevOps couldn't be reached. */
 export async function prDetails(cfg: Config, repo: RepoConfig, id: number): Promise<PrDetails | undefined> {
   const { org } = adoFor(cfg, repo);

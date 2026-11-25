@@ -1,13 +1,13 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { prDetails, type PrDetails } from "./ado.js";
+import { prDetails, prLastComment, type PrDetails } from "./ado.js";
 import { Card, Lane, laneKey, readBoard, updateBoard } from "./board.js";
 import type { Config, RepoConfig } from "./config.js";
 import { appendLedger, categorize, readLedger, reflectionsOn } from "./ledger.js";
 import { MORNING_MARKER, morningSummary, type BoardSnapshot } from "./morning.js";
 import { appendDigestBlock, digestHas, notify, writeWeeklyStats, type Note } from "./notify.js";
 import { TRIAGE_BATCH, TRIAGE_ICON, triage, triageStatus } from "./triage.js";
-import { applyRule, cook, removeWorktree, type Log, type Outcome } from "./pipeline.js";
+import { applyRule, cook, removeWorktree, slugify, type Log, type Outcome } from "./pipeline.js";
 import {
   addLearnedTool, allowToolProblem, KIND_LABEL, newRecipeId, RecipeStore, recipeCardNotes, recipeCardText, recipeTextFromTitle, RULE_FILE,
   type Recipe,
@@ -101,6 +101,8 @@ export class Chief {
       const found = board.findById(id);
       if (!found) return;
       found.card.setStatus(status);
+      // The Archive lane is Chief's only optional destination: make it the first time it's needed.
+      if (!board.lane(lane) && lane === this.cfg.lanes.archive) board.lanes.push(new Lane(lane));
       if (found.lane !== board.lane(lane)) board.move(found.card, lane);
     });
   }
@@ -217,8 +219,19 @@ export class Chief {
       };
     }
     const prev = this.state.get(c.id);
+    // A card whose PR was abandoned starts over: a fresh branch from the target, since the old
+    // one still exists on origin (Azure DevOps keeps an abandoned PR's branch), and the worker
+    // is told why the last attempt ended. A later rerun of that card keeps its -vN branch.
+    const branch =
+      prev?.status === "abandoned"
+        ? await this.freshBranch(repo, c.id, c.title)
+        : prev?.branch && /-v\d+$/.test(prev.branch)
+          ? prev.branch
+          : undefined;
     const previous =
-      prev?.status === "blocked"
+      prev?.status === "abandoned"
+        ? { reason: `${prev.reason ?? "its PR was abandoned"}. This attempt starts over from the target branch on a new branch (${branch}); the earlier commits are not on it, and the earlier PR stays closed.` }
+        : prev?.status === "blocked"
         ? { reason: prev.reason, approved: prev.approved, ...(prev.prId ? { pr: { id: prev.prId, url: prev.prUrl } } : {}) }
         : prev?.status === "pass" && prev.prId
           ? { pr: { id: prev.prId, url: prev.prUrl } }
@@ -228,7 +241,7 @@ export class Chief {
 
     let outcome: Outcome;
     try {
-      outcome = await cook(this.cfg, { id: c.id, title: c.title, notes: c.notes, repo, base: c.base, previous }, this.log);
+      outcome = await cook(this.cfg, { id: c.id, title: c.title, notes: c.notes, repo, base: c.base, previous, ...(branch ? { branch } : {}) }, this.log);
     } catch (err) {
       outcome = { status: "blocked", reason: `Chief error: ${(err as Error).message}`, summary: "", rounds: 0, branch: "", worktree: "" };
     }
@@ -424,12 +437,25 @@ export class Chief {
         this.log(`[${run.id}] served (PR !${run.prId} completed)`);
         await this.cleanUp(run.id);
       } else if (pr?.status === "abandoned") {
-        this.state.upsert({ id: run.id, status: "blocked", reason: "PR abandoned" });
         appendLedger(this.cfg.ledgerFile, { kind: "abandoned", at: new Date().toISOString(), id: run.id, repo: run.repo });
         const recipe = this.recipes.byCard(run.id);
-        if (recipe) this.recipes.update(recipe.id, { status: "failed", reason: "PR abandoned" });
-        this.moveCard(run.id, this.cfg.lanes.blocked, `🚧 PR !${run.prId} was abandoned`);
-        if (!recipe) await this.maybeReflect(run, repo, this.pastOutcome(run), { kind: "abandoned PR", text: abandonedSignal(run.id) });
+        if (recipe) {
+          // Abandoning a recipe's PR is saying no to the rule: never retryable, like a rejected proposal.
+          this.state.upsert({ id: run.id, status: "abandoned", reason: `PR !${run.prId} abandoned` });
+          this.recipes.update(recipe.id, { status: "rejected", reason: `PR !${run.prId} abandoned` });
+          this.moveCard(run.id, this.cfg.lanes.archive, `🗄 rejected · PR !${run.prId} was abandoned`);
+          this.log(`[${run.id}] recipe ${recipe.id} rejected (PR !${run.prId} abandoned)`);
+        } else {
+          // People abandon PRs for reasons that say nothing about the work (superseded, merged
+          // by hand, no longer needed), so learn only from what they wrote when abandoning it.
+          const comment = await prLastComment(this.cfg, repo, run.prId);
+          this.state.upsert({ id: run.id, status: "abandoned", reason: comment ? `PR !${run.prId} abandoned: ${comment}` : `PR !${run.prId} abandoned` });
+          const note = comment ? ` · “${oneLine(comment, 120)}”` : "";
+          this.moveCard(run.id, this.cfg.lanes.archive, `🗄 PR !${run.prId} was abandoned${note} · move to Ready to start over on a fresh branch`);
+          if (comment) await this.maybeReflect(run, repo, this.pastOutcome(run), { kind: "abandoned PR", text: abandonedSignal(run.id, comment) });
+          else this.log(`[${run.id}] PR !${run.prId} was abandoned with no comment; nothing to learn from`);
+        }
+        await this.cleanUp(run.id);
       } else if (pr?.status === "active" && run.pushedHead && run.branch) {
         // Keep a local copy of anything you push to the PR: ADO may delete the branch on merge.
         await git(["fetch", "origin", run.branch], repo.path);
@@ -501,10 +527,23 @@ export class Chief {
   }
 
   /** Remove the worktree and local branch of a Served card. Never fails the loop. */
+  /** `chief/<id>-<slug>-v<n>` for the first n ≥ 2 that exists neither locally nor on origin. */
+  private async freshBranch(repo: RepoConfig, id: string, title: string): Promise<string> {
+    const stem = `chief/${id}-${slugify(title)}`;
+    const remote = await git(["ls-remote", "--heads", "origin", `${stem}*`], repo.path);
+    const taken = new Set(remote.code === 0 ? remote.stdout.split("\n").map((l) => l.split("refs/heads/")[1]?.trim()).filter(Boolean) : []);
+    for (let n = 2; ; n++) {
+      const name = `${stem}-v${n}`;
+      const local = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`], repo.path)).code === 0;
+      const tracked = (await git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`], repo.path)).code === 0;
+      if (!local && !tracked && !taken.has(name)) return name;
+    }
+  }
+
   async cleanUp(id: string): Promise<void> {
     const run = this.state.get(id);
     const repo = run && this.cfg.repos[run.repo];
-    if (!run || !repo || run.status !== "served" || (!run.worktree && !run.branch)) return;
+    if (!run || !repo || (run.status !== "served" && run.status !== "abandoned") || (!run.worktree && !run.branch)) return;
     try {
       const removed = await removeWorktree(this.cfg, repo, run.worktree, run.branch);
       this.state.upsert({ id, worktree: undefined });

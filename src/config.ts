@@ -30,6 +30,8 @@ export interface Lanes {
   served: string;
   /** Where the reflector puts proposed recipes; created on the board when first needed. */
   recipes: string;
+  /** Where a card goes when its PR is abandoned; created on the board when first needed. */
+  archive: string;
 }
 
 export interface Config {
@@ -102,6 +104,7 @@ export const DEFAULT_LANES: Lanes = {
   blocked: "Blocked",
   served: "Served",
   recipes: "Recipes",
+  archive: "Archive",
 };
 
 export const DEFAULT_ALLOWED_TOOLS = [

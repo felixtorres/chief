@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type RunStatus = "cooking" | "pass" | "blocked" | "served";
+export type RunStatus = "cooking" | "pass" | "blocked" | "served" | "abandoned";
 export type Blast = "green" | "yellow" | "red";
 
 /** Work that passed checks and review but whose PR step failed, so a retry can go straight to the PR. */

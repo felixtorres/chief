@@ -162,13 +162,64 @@ describe("when a PR is merged", () => {
     expect(notes).toContain("⚠ REVIEW.md already has 3 Chief recipes (budget 2): merge or drop some");
   });
 
-  it("reflects on an abandoned PR", async () => {
+  it("learns from an abandoned PR only from what you wrote when abandoning it, and archives the card", async () => {
     const m = mergedPr();
-    const { cfg, chief } = setup(m.root, m.repo, { pushedHead: m.pushedHead });
+    const { cfg, chief, state } = setup(m.root, m.repo, { pushedHead: m.pushedHead }, "Pass", { ado: { org: "https://ado", project: "Proj" } });
     prSays({ status: "abandoned" });
+    process.env.FAKE_AZ_THREADS = JSON.stringify({
+      value: [
+        { comments: [{ commentType: "system", content: "Felix voted -5", publishedDate: "2026-11-25T10:00:00Z" }] },
+        { comments: [{ commentType: "text", content: "Superseded by ENT-17; the access belongs in the prompt.", publishedDate: "2026-11-25T10:05:00Z" }] },
+      ],
+    });
     await chief.checkServed(true);
     expect(reflectorCalls()[0]!.prompt).toContain("PR was ABANDONED");
+    expect(reflectorCalls()[0]!.prompt).toContain("Superseded by ENT-17");
+    expect(state.get(ID)).toMatchObject({ status: "abandoned", reason: "PR !7 abandoned: Superseded by ENT-17; the access belongs in the prompt." });
+    const card = readBoard(cfg.boardPath).lane("Archive")!.cards[0]!;
+    expect(card.status).toMatch(/^🗄 PR !7 was abandoned · “Superseded by ENT-17/);
+    expect(card.status).toContain("move to Ready to start over on a fresh branch");
     expect(readLedger(cfg.ledgerFile).find((e) => e.kind === "reflect")).toMatchObject({ signal: "abandoned PR" });
+  });
+
+  it("archives an abandoned PR without reflecting when nobody said why", async () => {
+    const m = mergedPr();
+    const { cfg, chief, state } = setup(m.root, m.repo, { pushedHead: m.pushedHead }, "Pass", { ado: { org: "https://ado", project: "Proj" } });
+    prSays({ status: "abandoned" });
+    await chief.checkServed(true);
+    expect(reflectorCalls()).toHaveLength(0);
+    expect(state.get(ID)!.status).toBe("abandoned");
+    expect(readBoard(cfg.boardPath).lane("Archive")!.cards.map((c) => c.id)).toEqual([ID]);
+    expect(readBoard(cfg.boardPath).lane("Blocked")!.cards).toHaveLength(0);
+    expect(readLedger(cfg.ledgerFile).some((e) => e.kind === "abandoned")).toBe(true);
+  });
+
+  it("rejects a recipe whose PR was abandoned, so it can't be applied again", async () => {
+    const m = mergedPr();
+    const { cfg, chief } = setup(m.root, m.repo, { pushedHead: m.pushedHead });
+    chief.recipes.add({ id: "r-aaaaaa", kind: "claude-rule", repo: "demo", text: "A rule", why: "", evidence: ["e"], dedupeKey: "a-rule", fromCard: "zzzzzz" });
+    chief.recipes.update("r-aaaaaa", { status: "applied", cardId: ID });
+    prSays({ status: "abandoned" });
+    await chief.checkServed(true);
+    expect(chief.recipes.get("r-aaaaaa")).toMatchObject({ status: "rejected", reason: "PR !7 abandoned" });
+    expect(readBoard(cfg.boardPath).lane("Archive")!.cards[0]!.status).toBe("🗄 rejected · PR !7 was abandoned");
+    expect(reflectorCalls()).toHaveLength(0);
+  });
+
+  it("starts an abandoned card over on a fresh branch when you move it back to Ready", async () => {
+    const m = mergedPr();
+    // openPr off, so the rerun stops at the branch; the abandoned state is what checkServed leaves.
+    const { cfg, chief, state } = setup(m.root, m.repo, { pushedHead: m.pushedHead }, "Pass", { openPr: false });
+    state.upsert({ id: ID, status: "abandoned", reason: "PR !7 abandoned: wrong approach" });
+    const b = readBoard(cfg.boardPath);
+    const card = b.lane("Pass")!.cards[0]!;
+    b.move(card, "Ready");
+    writeFileSync(cfg.boardPath, b.render());
+    await chief.tick();
+    expect(state.get(ID)!.branch).toBe(`${BRANCH}-v2`);
+    const worker = fakeCalls().find((c) => !c.prompt.includes("REVIEWER") && !c.prompt.includes("RECIPE KEEPER"))!;
+    expect(worker.prompt).toContain("PR !7 abandoned: wrong approach");
+    expect(worker.prompt).toContain(`starts over from the target branch on a new branch (${BRANCH}-v2)`);
   });
 });
 

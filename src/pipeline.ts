@@ -23,6 +23,8 @@ export interface CookInput {
   base?: string;
   /** The last attempt of this card, when it ended Blocked, or at the Pass (then `pr` is its PR). */
   previous?: { reason?: string; approved?: ApprovedWork; pr?: { id: number; url?: string } };
+  /** The branch to cook on, when not `chief/<id>-<slug>` (a card restarted after its PR was abandoned). */
+  branch?: string;
 }
 
 /** The branch a card starts from and its PR targets. */
@@ -108,10 +110,10 @@ async function mustGit(args: string[], cwd: string): Promise<string> {
 
 export async function prepareWorktree(
   cfg: Config,
-  input: Pick<CookInput, "id" | "title" | "repo" | "base">,
+  input: Pick<CookInput, "id" | "title" | "repo" | "base" | "branch">,
 ): Promise<{ branch: string; worktree: string; base: string; refreshed?: string }> {
   const { repo, id, title } = input;
-  const branch = `chief/${id}-${slugify(title)}`;
+  const branch = input.branch ?? `chief/${id}-${slugify(title)}`;
   const worktree = join(cfg.worktreesDir, `${repo.name}-${id}`);
   const target = targetBranch(input);
   let baseRef = target;

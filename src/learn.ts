@@ -129,6 +129,6 @@ export function revertSignal(id: string, r: Revert, days: number): string {
   return `Card chief-${id}'s PR was merged and then REVERTED ${days} day(s) later by commit ${r.sha.slice(0, 10)} ("${r.subject}"). Something in it was wrong enough to undo. Use the run log to find what a rule could have caught; if nothing in the log explains the revert, propose nothing.`;
 }
 
-export function abandonedSignal(id: string): string {
-  return `Card chief-${id}'s PR was ABANDONED: the human closed it without merging. Use the run log to judge whether the work itself was wrong (wrong approach, scope, or misread card) and what rule would have prevented it. If it was likely abandoned for reasons outside the work, propose nothing.`;
+export function abandonedSignal(id: string, comment: string): string {
+  return `Card chief-${id}'s PR was ABANDONED: the human closed it without merging, and wrote: "${comment}". Judge from that note and the run log whether the work itself was wrong (wrong approach, scope, or misread card). If the note says the work was superseded, merged elsewhere or no longer needed, the work was not wrong: propose nothing.`;
 }

@@ -78,6 +78,7 @@ export function resetFakeEnv(): void {
   delete process.env.FAKE_REFLECT;
   delete process.env.FAKE_AZ_PR;
   delete process.env.FAKE_AZ_ACTIVE;
+  delete process.env.FAKE_AZ_THREADS;
   delete process.env.FAKE_SECOND_RESULT;
   delete process.env.FAKE_TRIAGE;
 }
